@@ -40,7 +40,7 @@
   --color-code-bg:        var(--code-bg);
   --color-code-border:    var(--code-border);
 
-  /* Fonts */
+  /* Fonts — left: Tailwind theme key, right: CSS custom property */
   --font-sans: var(--font-sans);
   --font-mono: var(--font-mono);
 
@@ -64,18 +64,27 @@ kbd,
 pre,
 samp {
   font-family: var(--font-mono);
-  background: var(--code-bg);
-  border: 1px solid var(--code-border);
-  border-radius: var(--radius-sm);
 }
 
 pre {
+  background: var(--code-bg);
+  border: 1px solid var(--code-border);
+  border-radius: var(--radius);
   padding: 1rem 1.25rem;
   overflow-x: auto;
-  border-radius: var(--radius);
 }
 
 code:not(pre code) {
+  background: var(--code-bg);
+  border: 1px solid var(--code-border);
+  border-radius: var(--radius-sm);
   padding: 0.15em 0.35em;
   font-size: 0.875em;
+}
+
+kbd,
+samp {
+  background: var(--code-bg);
+  border: 1px solid var(--code-border);
+  border-radius: var(--radius-sm);
 }

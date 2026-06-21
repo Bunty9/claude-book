@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, it, expect } from 'vitest'
 
-const css = readFileSync(resolve(__dirname, 'tokens.css'), 'utf8')
+const css = readFileSync(resolve(import.meta.dirname, 'tokens.css'), 'utf8')
 
 const REQUIRED = [
   '--bg',
