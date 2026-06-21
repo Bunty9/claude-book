@@ -1,0 +1,113 @@
+/*
+ * Design Tokens — Claude, End to End
+ *
+ * Scale:
+ *   Surfaces: --bg, --bg-subtle, --bg-elevated, --border, --border-subtle
+ *   Foreground: --fg, --fg-muted, --fg-subtle
+ *   Accent (warm amber-clay, Claude-ish): --accent, --accent-fg, --accent-subtle
+ *   Semantic: --note, --note-subtle, --tip, --tip-subtle,
+ *             --warning, --warning-subtle, --danger, --danger-subtle
+ *   Code: --code-bg, --code-border
+ *   Radius: --radius-sm, --radius, --radius-lg
+ *   Shadows: --shadow-sm, --shadow-md
+ *   Fonts: --font-sans (Geist Variable), --font-mono (Geist Mono Variable)
+ *
+ *  Default = dark. .light overrides to light palette.
+ */
+
+/* ── Dark (default) ─────────────────────────────────────────────────────── */
+:root {
+  /* Surfaces */
+  --bg:           oklch(13% 0.005 240);
+  --bg-subtle:    oklch(17% 0.007 240);
+  --bg-elevated:  oklch(21% 0.008 240);
+  --border:       oklch(30% 0.010 240);
+  --border-subtle:oklch(23% 0.008 240);
+
+  /* Foreground */
+  --fg:           oklch(95% 0.003 240);
+  --fg-muted:     oklch(72% 0.008 240);
+  --fg-subtle:    oklch(52% 0.008 240);
+
+  /* Accent — warm amber / clay */
+  --accent:        oklch(72% 0.15 55);
+  --accent-fg:     oklch(15% 0.03 55);
+  --accent-subtle: oklch(22% 0.06 55);
+
+  /* Semantic — note (blue) */
+  --note:          oklch(68% 0.16 248);
+  --note-subtle:   oklch(20% 0.06 248);
+
+  /* Semantic — tip (teal) */
+  --tip:           oklch(72% 0.14 185);
+  --tip-subtle:    oklch(20% 0.06 185);
+
+  /* Semantic — warning (amber) */
+  --warning:       oklch(78% 0.16 85);
+  --warning-subtle:oklch(20% 0.07 85);
+
+  /* Semantic — danger (red) */
+  --danger:        oklch(65% 0.20 25);
+  --danger-subtle: oklch(20% 0.07 25);
+
+  /* Code */
+  --code-bg:     oklch(18% 0.008 240);
+  --code-border: oklch(28% 0.010 240);
+
+  /* Radius */
+  --radius-sm: 4px;
+  --radius:    6px;
+  --radius-lg: 10px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px oklch(0% 0 0 / 0.40);
+  --shadow-md: 0 4px 12px oklch(0% 0 0 / 0.55);
+
+  /* Fonts */
+  --font-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Geist Mono Variable', ui-monospace, 'Cascadia Code', monospace;
+}
+
+/* ── Light overrides ────────────────────────────────────────────────────── */
+.light {
+  /* Surfaces */
+  --bg:           oklch(99% 0.002 240);
+  --bg-subtle:    oklch(96% 0.004 240);
+  --bg-elevated:  oklch(100% 0.000 240);
+  --border:       oklch(85% 0.008 240);
+  --border-subtle:oklch(91% 0.005 240);
+
+  /* Foreground */
+  --fg:           oklch(13% 0.005 240);
+  --fg-muted:     oklch(42% 0.010 240);
+  --fg-subtle:    oklch(62% 0.010 240);
+
+  /* Accent */
+  --accent:        oklch(60% 0.17 55);
+  --accent-fg:     oklch(99% 0.002 55);
+  --accent-subtle: oklch(94% 0.06 55);
+
+  /* Semantic — note */
+  --note:          oklch(52% 0.19 248);
+  --note-subtle:   oklch(93% 0.06 248);
+
+  /* Semantic — tip */
+  --tip:           oklch(52% 0.17 185);
+  --tip-subtle:    oklch(93% 0.06 185);
+
+  /* Semantic — warning */
+  --warning:       oklch(60% 0.17 85);
+  --warning-subtle:oklch(96% 0.07 85);
+
+  /* Semantic — danger */
+  --danger:        oklch(52% 0.22 25);
+  --danger-subtle: oklch(96% 0.06 25);
+
+  /* Code */
+  --code-bg:     oklch(96% 0.004 240);
+  --code-border: oklch(87% 0.007 240);
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px oklch(0% 0 0 / 0.08);
+  --shadow-md: 0 4px 12px oklch(0% 0 0 / 0.12);
+}
