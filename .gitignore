@@ -9,3 +9,7 @@ dist
 next-env.d.ts
 /coverage
 .vercel
+
+# next-pwa generated service worker (build artifact)
+public/sw.js
+public/workbox-*.js

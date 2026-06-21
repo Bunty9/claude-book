@@ -1,0 +1,13 @@
+{
+  "name": "Claude, End to End",
+  "short_name": "Claude E2E",
+  "description": "An interactive field guide to working with Claude & Claude Code.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#060809",
+  "theme_color": "#060809",
+  "icons": [
+    { "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

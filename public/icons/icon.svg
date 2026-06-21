@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Background -->
+  <rect width="512" height="512" rx="96" fill="#060809"/>
+  <!-- >_ prompt glyph in accent amber-clay -->
+  <!-- > chevron -->
+  <polyline points="96,188 200,256 96,324" stroke="#c47a2e" stroke-width="40" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <!-- _ underscore cursor -->
+  <line x1="228" y1="340" x2="416" y2="340" stroke="#c47a2e" stroke-width="40" stroke-linecap="round"/>
+</svg>
