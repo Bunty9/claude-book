@@ -112,7 +112,7 @@ export const TREE: TreeMap = {
   },
 
   // ── Multi-step branch ─────────────────────────────────────────────────────
-  q_multi_step: {
+  'q-multi-step': {
     kind: 'question',
     id: 'q-multi-step',
     question: 'Does this task need to run at scale (many items in parallel) or on a schedule?',
@@ -122,7 +122,7 @@ export const TREE: TreeMap = {
     ],
   },
 
-  q_context_isolation: {
+  'q-context-isolation': {
     kind: 'question',
     id: 'q-context-isolation',
     question: 'Does this agent need an isolated git worktree (to edit files without affecting main)?',
@@ -134,7 +134,7 @@ export const TREE: TreeMap = {
   },
 
   // ── Event-driven branch ───────────────────────────────────────────────────
-  q_event_driven: {
+  'q-event-driven': {
     kind: 'question',
     id: 'q-event-driven',
     question: 'Which kind of event do you want to react to?',
@@ -146,7 +146,7 @@ export const TREE: TreeMap = {
   },
 
   // ── Reusable procedure branch ─────────────────────────────────────────────
-  q_reusable_proc: {
+  'q-reusable-proc': {
     kind: 'question',
     id: 'q-reusable-proc',
     question: 'Should this procedure load on every request, or only when explicitly invoked?',
@@ -157,7 +157,7 @@ export const TREE: TreeMap = {
     ],
   },
 
-  q_skill_scope: {
+  'q-skill-scope': {
     kind: 'question',
     id: 'q-skill-scope',
     question: 'Does the skill need to run its own agent (subagent execution)?',
@@ -274,38 +274,6 @@ export const TREE: TreeMap = {
     category: 'style',
   },
 }
-
-// Alias the hyphenated ids to match the TREE keys (TypeScript safe — no `as`)
-// The TREE object literal above uses quoted keys exactly matching the exported
-// RecommendationId union and the q_* question ids.  We patch in the question
-// node ids that use hyphens since object literal shorthand can't have hyphens.
-;(TREE as Record<string, TreeNode>)['q-multi-step'] = {
-  ...(TREE['q_multi_step'] as QuestionNode),
-  id: 'q-multi-step',
-}
-;(TREE as Record<string, TreeNode>)['q-context-isolation'] = {
-  ...(TREE['q_context_isolation'] as QuestionNode),
-  id: 'q-context-isolation',
-}
-;(TREE as Record<string, TreeNode>)['q-event-driven'] = {
-  ...(TREE['q_event_driven'] as QuestionNode),
-  id: 'q-event-driven',
-}
-;(TREE as Record<string, TreeNode>)['q-reusable-proc'] = {
-  ...(TREE['q_reusable_proc'] as QuestionNode),
-  id: 'q-reusable-proc',
-}
-;(TREE as Record<string, TreeNode>)['q-skill-scope'] = {
-  ...(TREE['q_skill_scope'] as QuestionNode),
-  id: 'q-skill-scope',
-}
-
-// Remove the underscore-aliased duplicates so integrity tests pass
-delete (TREE as Record<string, TreeNode | undefined>)['q_multi_step']
-delete (TREE as Record<string, TreeNode | undefined>)['q_context_isolation']
-delete (TREE as Record<string, TreeNode | undefined>)['q_event_driven']
-delete (TREE as Record<string, TreeNode | undefined>)['q_reusable_proc']
-delete (TREE as Record<string, TreeNode | undefined>)['q_skill_scope']
 
 // ---------------------------------------------------------------------------
 // Pure helper functions

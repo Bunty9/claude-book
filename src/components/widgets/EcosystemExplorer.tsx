@@ -130,7 +130,10 @@ function Select<T extends string>({
       <select
         id={id}
         value={value}
-        onChange={e => onChange(e.target.value as T)}
+        onChange={e => {
+          const match = options.find(o => o === e.target.value)
+          if (match !== undefined) onChange(match)
+        }}
         className="rounded border border-border bg-bg px-2 py-1.5 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-accent cursor-pointer"
       >
         {options.map(opt => (

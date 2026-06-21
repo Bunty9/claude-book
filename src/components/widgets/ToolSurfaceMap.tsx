@@ -27,6 +27,14 @@ const SURFACE_COLOUR: Record<ToolSurface, string> = {
   platform:      'bg-note-subtle    text-note',
 }
 
+// Closed-set guards over the select values (module scope → stable identity, so
+// the change handlers' useCallback deps stay empty).
+const isToolSurface = (v: string): v is ToolSurface =>
+  Object.prototype.hasOwnProperty.call(SURFACE_COLOUR, v)
+
+const SORT_KEYS: readonly SortKey[] = ['name', 'surface']
+const isSortKey = (v: string): v is SortKey => SORT_KEYS.some(k => k === v)
+
 // ── Small sub-components ─────────────────────────────────────────────────────
 
 interface SurfaceBadgeProps {
@@ -190,14 +198,20 @@ export function ToolSurfaceMap() {
   const handleSurfaceChange = useCallback(
     (e: React.ChangeEvent<HTMLSelectElement>) => {
       const val = e.target.value
-      setSurface(val === 'all' ? 'all' : (val as ToolSurface))
+      if (val === 'all') {
+        setSurface('all')
+      } else if (isToolSurface(val)) {
+        setSurface(val)
+      }
     },
     [],
   )
 
   const handleSortChange = useCallback(
-    (e: React.ChangeEvent<HTMLSelectElement>) =>
-      setSortKey(e.target.value as SortKey),
+    (e: React.ChangeEvent<HTMLSelectElement>) => {
+      const val = e.target.value
+      if (isSortKey(val)) setSortKey(val)
+    },
     [],
   )
 

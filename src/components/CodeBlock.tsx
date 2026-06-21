@@ -83,11 +83,17 @@ export function CodeBlock({ children, className }: CodeBlockProps) {
     }
   }, [children, lang])
 
+  useEffect(() => () => {
+    if (timeoutRef.current) clearTimeout(timeoutRef.current)
+  }, [])
+
   function handleCopy() {
     void navigator.clipboard.writeText(children).then(() => {
       setCopied(true)
       if (timeoutRef.current) clearTimeout(timeoutRef.current)
       timeoutRef.current = setTimeout(() => setCopied(false), 1500)
+    }).catch(() => {
+      // clipboard unavailable — keep Copy state
     })
   }
 

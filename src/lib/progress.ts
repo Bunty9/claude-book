@@ -21,8 +21,12 @@ function readIds(): string[] {
 
 function writeIds(ids: string[]): void {
   if (typeof window === 'undefined') return
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(ids))
-  window.dispatchEvent(new Event('cb:progress'))
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(ids))
+    window.dispatchEvent(new Event('cb:progress'))
+  } catch {
+    // storage unavailable — progress not persisted
+  }
 }
 
 export function markDone(id: string): void {
