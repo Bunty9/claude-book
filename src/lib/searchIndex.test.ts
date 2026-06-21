@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildIndex, search } from './searchIndex'
+import { buildIndex, search, loadIndexFromJson } from './searchIndex'
 
 const docs = [
   { id: 'a', title: 'Context window and compaction', summary: 'how context fills', body: 'autocompact triggers when the window is full', part: 'P3' },
@@ -26,5 +26,13 @@ describe('search index', () => {
   it('returns empty array for no match', () => {
     const idx = buildIndex(docs)
     expect(search(idx, 'zzzznotathing')).toEqual([])
+  })
+})
+
+describe('loadIndexFromJson', () => {
+  it('builds an index from a json snapshot and finds docs', () => {
+    const idx = loadIndexFromJson({ docs })
+    const hits = search(idx, 'worktree')
+    expect(hits.map(h => h.id)).toContain('b')
   })
 })

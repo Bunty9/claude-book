@@ -12,7 +12,11 @@ import { ProgressBadge } from './ProgressBadge'
 
 const TRACKS: TrackId[] = ['beginner', 'engineer', 'automator']
 
-export function Sidebar() {
+interface SidebarProps {
+  onOpenSearch?: () => void
+}
+
+export function Sidebar({ onOpenSearch }: SidebarProps) {
   const { track, setTrack } = useTrack()
   const pathname = usePathname()
   const [open, setOpen] = useState(false)
@@ -52,6 +56,17 @@ export function Sidebar() {
         <div className="mt-2">
           <ProgressBadge />
         </div>
+        {onOpenSearch !== undefined && (
+          <button
+            onClick={onOpenSearch}
+            className="mt-3 w-full flex items-center gap-2 px-3 py-1.5 rounded border border-border text-fg-muted text-xs hover:text-fg hover:border-fg-muted transition-colors"
+            aria-label="Open search"
+          >
+            <span>🔍</span>
+            <span className="flex-1 text-left">Search</span>
+            <kbd className="text-xs border border-border rounded px-1 py-0.5">⌘K</kbd>
+          </button>
+        )}
       </div>
       <div className="flex-1 py-4">
         {Array.from(grouped.entries()).map(([part, chs]) => (
