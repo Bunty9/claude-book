@@ -4,25 +4,30 @@ import React from 'react'
 import { Sidebar } from '@/components/shell/Sidebar'
 import { TableOfContents } from '@/components/shell/TableOfContents'
 import { SearchPalette, useSearchPalette } from '@/components/shell/SearchPalette'
-import { ThemeToggle } from '@/components/shell/ThemeToggle'
+import { TopBar } from '@/components/shell/TopBar'
 
 function BookLayoutInner({ children }: { children: React.ReactNode }) {
   const { open, setOpen } = useSearchPalette()
 
   return (
     <div className="flex min-h-screen">
-      <Sidebar onOpenSearch={() => setOpen(true)} />
-      <div className="flex-1 flex flex-col min-w-0">
-        <div className="flex justify-end px-4 pt-4">
-          <ThemeToggle />
+      <div className="max-w-[100rem] mx-auto w-full flex min-h-screen">
+        {/* Left: Sidebar — handles its own sticky (desktop) / overlay (mobile) */}
+        <Sidebar onOpenSearch={() => setOpen(true)} />
+
+        {/* Center column */}
+        <div className="flex-1 flex flex-col min-w-0">
+          <TopBar />
+          <main className="flex-1 w-full max-w-3xl mx-auto px-6 lg:px-8 py-8">
+            {children}
+          </main>
         </div>
-        <main className="flex-1 px-6 py-4 max-w-prose mx-auto w-full">
-          {children}
-        </main>
+
+        {/* Right: TOC — sticky, shown at lg+ */}
+        <aside className="hidden lg:block w-[16rem] shrink-0 sticky top-14 max-h-[calc(100dvh-3.5rem)] overflow-y-auto py-8 px-4">
+          <TableOfContents />
+        </aside>
       </div>
-      <aside className="hidden xl:block w-56 shrink-0 px-4 py-8">
-        <TableOfContents />
-      </aside>
       <SearchPalette open={open} onClose={() => setOpen(false)} />
     </div>
   )
