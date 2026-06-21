@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useEffect, useRef, useState } from 'react'
+import type { BundledLanguage, SpecialLanguage } from 'shiki'
 
 interface CodeBlockProps {
   children: string
@@ -38,6 +39,14 @@ function getHighlighter(): Promise<import('shiki').Highlighter> {
   return highlighterPromise
 }
 
+/** Narrows a raw string to BundledLanguage by checking against what the highlighter loaded. */
+function isBundledLanguage(l: string, loaded: readonly string[]): l is BundledLanguage {
+  return loaded.includes(l)
+}
+
+/** The safe fallback when a language is not loaded. */
+const FALLBACK_LANG: SpecialLanguage = 'text'
+
 function extractLanguage(className?: string): string {
   if (!className) return 'text'
   const match = /language-(\w+)/.exec(className)
@@ -57,11 +66,9 @@ export function CodeBlock({ children, className }: CodeBlockProps) {
       .then((hl) => {
         // Check if the lang is loaded; fall back to 'text' if not.
         const loadedLangs = hl.getLoadedLanguages()
-        const safeLang = loadedLangs.includes(lang as Parameters<typeof hl.codeToHtml>[1]['lang'])
-          ? lang
-          : 'text'
+        const safeLang: BundledLanguage | SpecialLanguage = isBundledLanguage(lang, loadedLangs) ? lang : FALLBACK_LANG
         const highlighted = hl.codeToHtml(children, {
-          lang: safeLang as Parameters<typeof hl.codeToHtml>[1]['lang'],
+          lang: safeLang,
           themes: { dark: 'github-dark', light: 'github-light' },
         })
         if (!cancelled) setHtml(highlighted)

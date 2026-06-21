@@ -6,6 +6,25 @@ import { Figure } from './Figure'
 import { Mermaid } from './Mermaid'
 import { Markmap } from './Markmap'
 
+/** Props we expect on the <code> child of a fenced code block. */
+type CodeProps = { className?: string; children?: string }
+
+/** Returns true when an unknown value is a CodeProps-shaped object. */
+function hasCodeProps(props: unknown): props is CodeProps {
+  if (typeof props !== 'object' || props === null) return false
+  // Use `in` narrowing to access individual keys without a cast.
+  const classNameOk =
+    !('className' in props) || typeof props.className === 'string'
+  const childrenOk =
+    !('children' in props) || typeof props.children === 'string'
+  return classNameOk && childrenOk
+}
+
+/** Narrows a valid React element to one carrying CodeProps on a <code> tag. */
+function isCodeElement(el: React.ReactElement): el is React.ReactElement<CodeProps> {
+  return el.type === 'code' && hasCodeProps(el.props)
+}
+
 /**
  * MDX renders fenced code as:
  *   <pre><code class="language-x">…source…</code></pre>
@@ -19,22 +38,16 @@ function PreOverride({
   ...rest
 }: React.HTMLAttributes<HTMLPreElement>) {
   // MDX nests a single <code> element directly inside <pre>
-  if (React.isValidElement(children)) {
-    const codeEl = children as React.ReactElement<{
-      className?: string
-      children?: string
-    }>
-    if (codeEl.type === 'code') {
-      const source =
-        typeof codeEl.props.children === 'string'
-          ? codeEl.props.children
-          : ''
-      return (
-        <CodeBlock className={codeEl.props.className}>
-          {source}
-        </CodeBlock>
-      )
-    }
+  if (React.isValidElement(children) && isCodeElement(children)) {
+    const source =
+      typeof children.props.children === 'string'
+        ? children.props.children
+        : ''
+    return (
+      <CodeBlock className={children.props.className}>
+        {source}
+      </CodeBlock>
+    )
   }
 
   // Fallback: render a plain <pre> with token-backed styling
