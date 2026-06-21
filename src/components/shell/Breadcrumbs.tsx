@@ -20,8 +20,10 @@ export function Breadcrumbs({ part, title }: BreadcrumbsProps) {
   return (
     <nav aria-label="Breadcrumb" className="flex items-center flex-wrap gap-2 text-sm text-fg-muted mb-4">
       <Link href="/" className="hover:text-fg transition-colors shrink-0">Home</Link>
-      <ChevronRight />
-      <span className="text-fg-muted hidden sm:inline truncate max-w-[8rem]">{PART_LABELS[part]}</span>
+      <span className="hidden sm:contents">
+        <ChevronRight />
+        <span className="text-fg-muted truncate max-w-[8rem]">{PART_LABELS[part]}</span>
+      </span>
       <ChevronRight />
       <span className="text-fg truncate max-w-[12rem] sm:max-w-none">{title}</span>
     </nav>
