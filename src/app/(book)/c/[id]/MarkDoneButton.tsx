@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState, useEffect } from 'react'
-import { markDone, unmarkDone, isDone } from '@/lib/progress'
+import { markDone, unmarkDone, isDone, useProgressVersion } from '@/lib/progress'
 
 interface MarkDoneButtonProps {
   id: string
@@ -10,11 +10,12 @@ interface MarkDoneButtonProps {
 export function MarkDoneButton({ id }: MarkDoneButtonProps) {
   // Start with false (matches SSR), then sync from localStorage after mount.
   const [done, setDone] = useState(false)
+  const progressVersion = useProgressVersion()
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setDone(isDone(id))
-  }, [id])
+  }, [id, progressVersion])
 
   function toggle() {
     if (done) {

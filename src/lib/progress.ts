@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react'
 import { TrackId } from '@/content/types'
 import { chaptersForTrack } from '@/content/manifest'
 
@@ -21,6 +22,7 @@ function readIds(): string[] {
 function writeIds(ids: string[]): void {
   if (typeof window === 'undefined') return
   localStorage.setItem(STORAGE_KEY, JSON.stringify(ids))
+  window.dispatchEvent(new Event('cb:progress'))
 }
 
 export function markDone(id: string): void {
@@ -51,4 +53,20 @@ export function completion(track: TrackId): { done: number; total: number; pct: 
 export function resumeChapter(track: TrackId): string | undefined {
   const done = new Set(readIds())
   return chaptersForTrack(track).find(c => !done.has(c.id))?.id
+}
+
+export function useProgressVersion(): number {
+  const [version, setVersion] = useState(0)
+
+  useEffect(() => {
+    function bump() { setVersion(v => v + 1) }
+    window.addEventListener('cb:progress', bump)
+    window.addEventListener('storage', bump)
+    return () => {
+      window.removeEventListener('cb:progress', bump)
+      window.removeEventListener('storage', bump)
+    }
+  }, [])
+
+  return version
 }

@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useTrack } from '@/app/providers'
 import { chaptersForTrack } from '@/content/manifest'
-import { isDone } from '@/lib/progress'
+import { isDone, useProgressVersion } from '@/lib/progress'
 import { TrackId, PartId } from '@/content/types'
 import { PART_LABELS } from '@/content/parts'
 import { ProgressBadge } from './ProgressBadge'
@@ -78,6 +78,7 @@ function SidebarContent({ onOpenSearch }: SidebarProps) {
   const { track, setTrack } = useTrack()
   const pathname = usePathname()
   const mounted = useMounted()
+  useProgressVersion()
   const chapters = chaptersForTrack(track)
 
   // Group by part, preserving track order
