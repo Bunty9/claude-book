@@ -5,7 +5,7 @@ export const DEFAULT_TRACK: TrackId = 'beginner'
 const STORAGE_KEY = 'cb:track'
 
 function isTrackId(value: string): value is TrackId {
-  return (TRACKS as readonly string[]).includes(value)
+  return TRACKS.some((t) => t === value)
 }
 
 export function getTrack(): TrackId {

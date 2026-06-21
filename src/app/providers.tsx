@@ -47,8 +47,8 @@ function readStoredTheme(): Theme {
 // ── Providers ──────────────────────────────────────────────────────────────
 
 export function Providers({ children }: { children: React.ReactNode }) {
-  // Lazy initialisers run only on the client after hydration, so localStorage
-  // is available and we avoid setState-in-effect entirely.
+  // Lazy initialisers run on both server and client; the typeof window guards
+  // inside getTrack/readStoredTheme make them SSR-safe without setState-in-effect.
   const [track, setTrackState] = useState<TrackId>(() => getTrack())
   const [theme, setTheme] = useState<Theme>(() => readStoredTheme())
 
