@@ -8,14 +8,22 @@ interface BreadcrumbsProps {
   title: string
 }
 
+function ChevronRight() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" className="text-fg-subtle shrink-0">
+      <path d="M5 3l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+    </svg>
+  )
+}
+
 export function Breadcrumbs({ part, title }: BreadcrumbsProps) {
   return (
-    <nav aria-label="Breadcrumb" className="flex items-center gap-2 text-sm text-fg-muted mb-4">
-      <Link href="/" className="hover:text-fg transition-colors">Home</Link>
-      <span>›</span>
-      <span>{PART_LABELS[part]}</span>
-      <span>›</span>
-      <span className="text-fg truncate">{title}</span>
+    <nav aria-label="Breadcrumb" className="flex items-center flex-wrap gap-2 text-sm text-fg-muted mb-4">
+      <Link href="/" className="hover:text-fg transition-colors shrink-0">Home</Link>
+      <ChevronRight />
+      <span className="text-fg-muted hidden sm:inline truncate max-w-[8rem]">{PART_LABELS[part]}</span>
+      <ChevronRight />
+      <span className="text-fg truncate max-w-[12rem] sm:max-w-none">{title}</span>
     </nav>
   )
 }
