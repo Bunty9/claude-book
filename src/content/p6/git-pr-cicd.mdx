@@ -166,21 +166,6 @@ Claude becomes especially useful when wired into a CI pipeline — not just to r
 
 ### The basic integration pattern
 
-```mermaid
-sequenceDiagram
-    participant Dev as Developer
-    participant CI as CI Runner
-    participant Claude as Claude (SDK/CLI)
-    participant Repo as Git Repo
-
-    Dev->>Repo: push branch
-    CI->>CI: run smoke / lint / typecheck
-    CI-->>Claude: on failure, call claude -p "Fix these errors: ..."
-    Claude->>Repo: read failing files, edit, commit fix
-    Claude-->>CI: done
-    CI->>CI: re-run checks on new commit
-```
-
 <Mermaid chart={`sequenceDiagram
     participant Dev as Developer
     participant CI as CI Runner
