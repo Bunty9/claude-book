@@ -49,6 +49,68 @@ function readTokens(): Record<string, string> {
   }
 }
 
+// ── Serialized renderer ──────────────────────────────────────────────────────
+//
+// `mermaid` is a global singleton: `initialize()` mutates shared config and
+// `render()` manipulates a shared DOM sandbox, so concurrent calls from
+// multiple <Mermaid> instances (e.g. several diagrams re-rendering together on
+// a theme toggle) can interleave and corrupt each other's output. We load the
+// library once, run every parse+render through a single promise queue, and
+// re-initialize only when the theme tokens actually change.
+
+type MermaidApi = (typeof import('mermaid'))['default']
+
+let mermaidPromise: Promise<MermaidApi> | null = null
+let lastTokenSig = ''
+let renderQueue: Promise<unknown> = Promise.resolve()
+
+function loadMermaid(): Promise<MermaidApi> {
+  if (mermaidPromise === null) {
+    mermaidPromise = import('mermaid').then((mod) => mod.default)
+  }
+  return mermaidPromise
+}
+
+/**
+ * Render one chart to an SVG string. Returns null when the chart fails the
+ * pre-flight parse (bad syntax); rejects when the import or render throws.
+ * Calls are serialized so initialize/parse/render never interleave across
+ * instances. Tokens are read inside the critical section so a render queued
+ * during a theme toggle picks up the freshest colors.
+ */
+async function renderChart(
+  chart: string,
+  getTokens: () => Record<string, string>,
+  id: string,
+): Promise<string | null> {
+  const run = renderQueue.then(async (): Promise<string | null> => {
+    const mermaid = await loadMermaid()
+    const tokens = getTokens()
+    const sig = JSON.stringify(tokens)
+    if (sig !== lastTokenSig) {
+      mermaid.initialize({
+        startOnLoad: false,
+        suppressErrorRendering: true,
+        securityLevel: 'strict',
+        theme: 'base',
+        themeVariables: tokens,
+      })
+      lastTokenSig = sig
+    }
+    const ok = await mermaid.parse(chart, { suppressErrors: true })
+    if (!ok) return null
+    const result = await mermaid.render(id, chart)
+    return result.svg
+  })
+  // Keep the queue alive on settlement (errors swallowed here, surfaced to the
+  // caller via `run`) so one failed render can't wedge the chain.
+  renderQueue = run.then(
+    () => undefined,
+    () => undefined,
+  )
+  return run
+}
+
 export function Mermaid({ chart }: MermaidProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [rendered, setRendered] = useState(false)
@@ -63,44 +125,28 @@ export function Mermaid({ chart }: MermaidProps) {
     setRendered(false)
     setParseError(false)
 
-    import('mermaid')
-      .then(async (mod) => {
-        const mermaid = mod.default
-        mermaid.initialize({
-          startOnLoad: false,
-          suppressErrorRendering: true,
-          securityLevel: 'strict',
-          theme: 'base',
-          themeVariables: readTokens(),
-        })
-
-        // Pre-flight parse — returns falsy on bad syntax
-        const ok = await mermaid.parse(chart, { suppressErrors: true })
-        if (!ok) {
-          if (!cancelled && renderId === renderIdRef.current) setParseError(true)
+    const id = `mermaid-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    renderChart(chart, readTokens, id)
+      .then((svg) => {
+        if (cancelled || renderId !== renderIdRef.current) return
+        if (svg === null) {
+          setParseError(true) // pre-flight parse failed (bad syntax)
           return
         }
-
-        const id = `mermaid-${Date.now()}-${Math.random().toString(36).slice(2)}`
-        return mermaid.render(id, chart)
-      })
-      .then((result) => {
-        if (result === undefined) return // parse failed path
-        if (cancelled || renderId !== renderIdRef.current) return
-        if (containerRef.current) {
-          containerRef.current.innerHTML = result.svg
-          // Mermaid sizes the SVG to its intrinsic (often tiny) width and caps
-          // it with an inline max-width, leaving diagrams hard to read. Let the
-          // SVG scale up to fill the content column; the viewBox keeps the
-          // aspect ratio so text enlarges proportionally.
-          const svg = containerRef.current.querySelector('svg')
-          if (svg) {
-            svg.style.width = '100%'
-            svg.style.maxWidth = '100%'
-            svg.style.height = 'auto'
-          }
-          setRendered(true)
+        const host = containerRef.current
+        if (!host) return
+        host.innerHTML = svg
+        // Mermaid sizes the SVG to its intrinsic (often tiny) width and caps
+        // it with an inline max-width, leaving diagrams hard to read. Let the
+        // SVG scale up to fill the content column; the viewBox keeps the
+        // aspect ratio so text enlarges proportionally.
+        const el = host.querySelector('svg')
+        if (el) {
+          el.style.width = '100%'
+          el.style.maxWidth = '100%'
+          el.style.height = 'auto'
         }
+        setRendered(true)
       })
       .catch((err: unknown) => {
         if (process.env.NODE_ENV !== 'production') {
