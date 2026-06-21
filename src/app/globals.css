@@ -158,6 +158,64 @@ samp {
   background-clip: padding-box;
 }
 
+/* ── Focus rings ─────────────────────────────────────────────────────────── */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* ── Motion — restrained ─────────────────────────────────────────────────── */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.2s ease-out both;
+}
+
+/* ── Prose tuning ─────────────────────────────────────────────────────────── */
+.prose {
+  line-height: 1.75;
+}
+
+.prose a {
+  text-decoration: none;
+  border-bottom: 1px solid var(--border-subtle);
+  transition: border-color 0.15s, color 0.15s;
+}
+.prose a:hover {
+  border-bottom-color: var(--accent);
+  color: var(--accent);
+}
+
+.prose h2 {
+  margin-top: 2.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border-subtle);
+}
+.prose h2:first-of-type {
+  border-top: none;
+  padding-top: 0;
+  margin-top: 0;
+}
+
+.prose :where(h1) {
+  font-size: 2rem;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+}
+.prose :where(h2) {
+  font-size: 1.375rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+.prose :where(h3) {
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
 /* ── Shiki dual-theme class-based switching ──────────────────────────────── */
 /* Dark is default (no class on :root). Light overrides via .light class. */
 .shiki,

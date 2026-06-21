@@ -1,6 +1,7 @@
 'use client'
 
 import React from 'react'
+import { usePathname } from 'next/navigation'
 import { Sidebar } from '@/components/shell/Sidebar'
 import { TableOfContents } from '@/components/shell/TableOfContents'
 import { SearchPalette, useSearchPalette } from '@/components/shell/SearchPalette'
@@ -8,6 +9,7 @@ import { TopBar } from '@/components/shell/TopBar'
 
 function BookLayoutInner({ children }: { children: React.ReactNode }) {
   const { open, setOpen } = useSearchPalette()
+  const pathname = usePathname()
 
   return (
     <div className="flex min-h-screen">
@@ -19,7 +21,9 @@ function BookLayoutInner({ children }: { children: React.ReactNode }) {
         <div className="flex-1 flex flex-col min-w-0">
           <TopBar />
           <main className="flex-1 w-full max-w-3xl mx-auto px-6 lg:px-8 py-8">
-            {children}
+            <div className="animate-fade-in" key={pathname}>
+              {children}
+            </div>
           </main>
         </div>
 

@@ -74,6 +74,14 @@ function NotDoneIcon() {
   )
 }
 
+function HamburgerIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+      <path d="M2 4h14M2 9h14M2 14h14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+    </svg>
+  )
+}
+
 function SidebarContent({ onOpenSearch }: SidebarProps) {
   const { track, setTrack } = useTrack()
   const pathname = usePathname()
@@ -188,7 +196,7 @@ export function Sidebar({ onOpenSearch }: SidebarProps) {
         onClick={() => setOpen(prev => !prev)}
         aria-label="Toggle sidebar"
       >
-        ☰
+        <HamburgerIcon />
       </button>
 
       {/* Mobile overlay backdrop */}
