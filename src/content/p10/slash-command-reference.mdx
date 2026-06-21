@@ -1,0 +1,135 @@
+# Slash-command reference
+
+Slash commands are the fastest way to reach Claude Code's built-in features: type `/` and a name, and you invoke everything from context management to permission control to bundled workflows. This chapter is a quick-lookup reference — what each command does, when to use it, and the handful of sharp edges worth knowing before you need them.
+
+<Callout type="note" title="Commands change with versions">
+Claude Code ships updates frequently. The list here reflects the commands documented in the official reference as of the research date. Use `/help` in any session to see every command available in your installed version, including custom skills and MCP server prompts registered for your project.
+</Callout>
+
+## How slash commands work
+
+When you type a slash command, Claude Code processes it before the message reaches the model. Depending on the command, it either runs a built-in action directly (like `/clear` resetting context), invokes a skill file (like `/code-review` loading a bundled `SKILL.md`), or starts an interactive configuration panel (like `/config` opening a menu).
+
+Custom skills and saved workflows also register as slash commands using the same `/name` format — there is no visual distinction between a built-in and a skill you or your team wrote. `/help` shows them all in one list.
+
+Arguments are passed as text after the command name: `/effort high`, `/goal all tests are passing`, `/loop 5m check CI`. A special `$ARGUMENTS` placeholder in skill files receives everything after the command name, enabling parameterized commands.
+
+## Session management
+
+| Command | What it does |
+|---|---|
+| `/clear` | Resets the conversation to an empty context. Useful when context is filling up or a session has gone in the wrong direction. Does not undo file changes already written to disk. |
+| `/compact` | Summarises older conversation history into a compact representation, freeing up context window space without losing the thread entirely. Claude emits a `compact_boundary` marker as it works. |
+| `/rewind` | Restores files to their pre-edit state using checkpoints that Claude Code saves before each write. Run it when Claude made changes you want to undo. Requires `fileCheckpointingEnabled: true` (on by default). |
+| `/context` | Shows a summary of the current context usage — how much of the window is consumed and by what. Helpful before deciding whether to compact or clear. |
+| `/usage` | Displays token usage and cost information for the current session. |
+
+<Callout type="tip" title="Compact before, not after">
+Run `/compact` when you notice the context growing heavy — not after it has already triggered automatic compaction. Proactive compaction lets you keep the parts of the conversation you care about; automatic compaction is more aggressive. You can also ask Claude to compact while keeping a specific piece of context: "compact but keep the function signatures we just discussed."
+</Callout>
+
+## Working directory and navigation
+
+| Command | What it does |
+|---|---|
+| `/cd <path>` | Changes the working directory while preserving the prompt cache. More efficient than starting a new session to work on a different part of a monorepo. Added in v2.1.169. |
+| `/add-dir <path>` | Adds an additional directory to the session's file access scope. Useful when work spans multiple repos that are not siblings. |
+| `/doctor` | Runs a self-diagnostic: checks for common configuration problems, missing dependencies, and environment issues. Start here before filing a bug report. |
+
+## Model and effort controls
+
+| Command | What it does |
+|---|---|
+| `/model` | Opens model selection. Lists available models and lets you switch for the current session. |
+| `/effort <level>` | Sets the reasoning depth for subsequent turns. Accepted values: `low`, `medium`, `high`, `xhigh`, and `max`. Higher effort means more thinking tokens and better results on complex tasks — at higher cost. The `ultracode` level combines `xhigh` effort with automatic workflow orchestration. |
+| `/config` | Opens the configuration panel. From here you can change output style, toggle settings, and manage most session-level preferences without editing `settings.json` directly. |
+
+The effort levels map to a practical decision:
+
+```
+low     — quick lookups, simple rewrites, low-stakes answers
+medium  — default; covers most everyday coding tasks
+high    — design decisions, multi-file refactors, complex debugging
+xhigh   — deep analysis, architecture work, long reasoning chains
+max     — extended multi-step analysis where accuracy matters more than speed
+```
+
+## Permissions and security
+
+| Command | What it does |
+|---|---|
+| `/permissions` | Shows the current permission rules — which tools are allowed, which are denied, and which will prompt. Equivalent to viewing the `permissions` key in your `settings.json`, but live. |
+| `/plan` | Toggles plan mode on and off. In plan mode, Claude explores freely but file edits always prompt for approval — a useful safety net when you want to review before anything lands on disk. `Shift+Tab` in the terminal also cycles through permission modes. |
+
+## MCP and integrations
+
+| Command | What it does |
+|---|---|
+| `/mcp` | Lists connected MCP servers, their status, and the tools they expose. Useful for debugging a server that is not responding or verifying that a new server registered correctly. |
+| `/plugin` | Opens the plugin management panel: browse the Anthropic marketplace, install or uninstall plugins, and check what is currently enabled. The Discover tab shows context cost and component preview before you install. |
+
+## Agents and workflows
+
+| Command | What it does |
+|---|---|
+| `/agents` | Opens the subagent manager. The Running tab shows active background agents; the Library tab lets you create, edit, and delete custom agent definitions. |
+| `/workflows` | Shows running and completed dynamic workflow runs. Press `p` to pause or resume a workflow, `x` to stop it, `r` to restart a stuck agent, and `s` to save a workflow for reuse as a slash command. Added in v2.1.154. |
+| `/deep-research <question>` | Bundled workflow. Fans out web searches across the question, cross-checks sources, and synthesises a cited report. Good for research questions that benefit from pulling from multiple independent sources. |
+| `/loop [interval]` | Runs the following prompt on a repeating cycle inside the current session. The interval accepts plain-English expressions (`5m`, `1h`, `30s`). Stop with `Ctrl+C`. |
+| `/schedule` | Defers a one-shot task to a future time. Accepts natural language: "in 2 hours", "tomorrow at 9am". Cloud-hosted — survives session end. Manage with `/schedule list` and `/schedule cancel <id>`. |
+| `/goal <condition>` | Registers a session-level completion condition. Claude keeps working until the condition is met, without requiring repeated prompts. Example: `/goal all TypeScript errors are zero`. |
+
+## Memory and skills
+
+| Command | What it does |
+|---|---|
+| `/memory` | Shows the current auto-memory state — what facts Claude has recorded across sessions. Lets you review and edit stored facts before they influence the next session. |
+| `/skills` | Lists available skills: bundled, project-level, and personal. Shows which skills are active and their descriptions. |
+
+## Utilities
+
+| Command | What it does |
+|---|---|
+| `/help` | Lists all available commands for the current session, including custom skills, saved workflows, and MCP server prompts. The definitive live reference. |
+| `/statusline` | Configures the terminal status line displayed while Claude is running — shows model, cost, effort, and custom fields. |
+| `/keybindings` | Opens keybinding configuration. Lets you remap keys without editing `~/.claude/keybindings.json` by hand. |
+| `/debug` | Bundled skill. Runs a systematic debugging pass on a failing test, error, or misbehaving function. |
+| `/run` | Bundled skill. Infers how to launch the project from `README`, `package.json`, or `Makefile`, starts it, and reports what it observes. |
+| `/verify` | Bundled skill. Launches the app and checks that a recent change works in the running application, not just in static analysis. |
+| `/code-review` | Bundled skill. Reviews the current diff for correctness, reuse, and efficiency. Pass `--fix` to apply findings directly, or `--comment` to post them as inline PR comments. |
+| `/batch` | Bundled skill. Runs a prompt across many inputs in parallel. Useful for bulk analysis, multi-file rewrites, or running the same check across a list of items. |
+
+## Bundled skills versus built-ins
+
+The commands above fall into two distinct categories worth understanding:
+
+**Built-in commands** (`/clear`, `/compact`, `/model`, `/effort`, `/plan`, `/cd`, `/mcp`, `/config`) are implemented directly in Claude Code. They execute without loading a skill file and are always available.
+
+**Bundled skills** (`/code-review`, `/debug`, `/run`, `/verify`, `/batch`, `/deep-research`, `/loop`, `/schedule`) are Markdown skill files that ship with Claude Code. They are invoked exactly like built-ins but can be overridden: create a skill with the same name in `.claude/skills/` and your version takes precedence over the bundled one. You can also disable all bundled skills with `disableBundledSkills: true` in `settings.json`.
+
+<Callout type="tip" title="MCP server prompts appear here too">
+If an MCP server exposes prompts (not just tools), those prompts register as slash commands prefixed with the server name. They appear in `/help` alongside your custom skills and built-ins. This is how tools like the Zapier MCP server surface reusable prompt templates directly in the command palette.
+</Callout>
+
+## Quick-lookup flow
+
+When you cannot remember which command you need:
+
+<Mermaid chart={`
+flowchart TD
+    A["Need a command?"] --> B{What kind of task?}
+
+    B -->|"Manage context / session"| C["/clear, /compact, /rewind, /context"]
+    B -->|"Change how Claude thinks"| D["/effort, /model, /plan"]
+    B -->|"Run or verify code"| E["/run, /verify, /debug"]
+    B -->|"Review or improve code"| F["/code-review, /batch"]
+    B -->|"Automate / schedule"| G["/loop, /schedule, /goal, /workflows"]
+    B -->|"Manage plugins / MCP"| H["/plugin, /mcp, /agents"]
+    B -->|"Not sure"| I["/help"]
+`} />
+
+## Recap
+
+Slash commands divide into three groups: session management commands that control context and safety (`/clear`, `/compact`, `/plan`, `/rewind`); control commands that tune model behaviour (`/effort`, `/model`, `/config`); and bundled skills that invoke reusable workflows (`/code-review`, `/debug`, `/run`, `/deep-research`). Built-ins always run; bundled skills can be overridden or disabled. Use `/help` in any session for the definitive live list.
+
+The next chapter covers custom slash commands — how to write your own skills and save workflows as commands your whole team can invoke.

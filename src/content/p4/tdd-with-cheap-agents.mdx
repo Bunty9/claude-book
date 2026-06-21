@@ -1,0 +1,218 @@
+# TDD with low-cost agents
+
+You will learn how to run genuine test-driven development with AI agents — specifically how to pair the Red → Green → Refactor cycle with cheap, fast models so each loop stays short and the feedback stays honest. By the end you will have a concrete mental model for when to use a powerful model, when to use a cheaper one, and how to build the local environment that makes the whole thing work at speed.
+
+## Why TDD and agents are a natural pair
+
+Test-driven development has always been about tight feedback loops. Write a failing test, make it pass, clean it up — then repeat. The discipline lives or dies on how long each loop takes. When a loop takes seconds you stay in flow. When it takes minutes you drift.
+
+Agents accelerate every phase of the loop without changing its shape. A cheap agent can draft edge-case tests from a prose description. A cheap agent can generate a minimal implementation that passes exactly those tests. A more capable model handles the refactor phase where structural judgement matters. The discipline stays yours; the typing and first-draft thinking shifts to the model.
+
+The key word above is *cheap*. The Red and Green phases are largely mechanical: translate a specification into test assertions, then translate failing assertions into passing code. These tasks do not require the deepest reasoning model available. They require speed and iteration. Over-spending on model capability here is a common mistake — it slows the loop and inflates cost without improving correctness, because the test suite is the correctness oracle, not the model.
+
+<TDDLoopVisualizer />
+
+Explore the three phases above. Notice the **Agent contribution** bar: Red and Green are high-automation phases where a cheap model carries most of the cognitive load. Refactor is lower — the agent can apply targeted cleanups, but the human still identifies what needs improving. The cycle runs fastest when you match model capability to phase needs.
+
+## Building the environment for fast loops
+
+The agent loop is only as fast as its environment. Three investments pay off across every TDD cycle you run:
+
+### 1. A test runner that exits immediately
+
+The agent should be able to run a single test file — or a single test — in under five seconds. A full suite run at the wrong moment is a context-window tax and a time cost rolled into one. Configure your test runner to support focused mode:
+
+```bash
+# Vitest — run only the file being developed
+pnpm vitest run src/lib/tokenEstimator.test.ts
+
+# Jest equivalent
+npx jest --testPathPattern="tokenEstimator" --no-coverage
+
+# Run a single test by name pattern
+pnpm vitest run -t "should return 0 for empty input"
+```
+
+In the agent's task instruction, tell it to use the focused invocation at every step — not the full suite. The full suite runs once at the end, as a final gate.
+
+### 2. Automatic permission pre-approval for the test command
+
+Nothing breaks the loop more reliably than a permission prompt interrupting a `pnpm vitest run` call. Pre-approve the exact command pattern in `.claude/settings.json`:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm vitest run *)",
+      "Bash(pnpm vitest run -t *)",
+      "Bash(npx jest *)"
+    ]
+  }
+}
+```
+
+With `bypassPermissions` mode enabled globally, this is unnecessary — but in team settings where bypass is inappropriate, the targeted allow list keeps the agent autonomous on test commands while leaving file writes and deploys gated. (Source: packet-A, §3)
+
+### 3. A test file scaffold that the agent fills in
+
+Instead of asking the agent to create both the file and the tests from scratch, give it a scaffold that enforces your project's conventions:
+
+```typescript
+// src/lib/__tests__/tokenEstimator.test.ts
+import { describe, it, expect } from 'vitest'
+import { estimateTokens } from '../tokenEstimator'
+
+describe('estimateTokens', () => {
+  // Agent fills in the it() blocks from the specification below.
+  //
+  // SPEC:
+  // - empty string → 0
+  // - whitespace-only → 0
+  // - single word → 1
+  // - rough approximation: 4 chars per token (do not enforce exact rounding)
+  // - very long input (>10_000 chars) → does not throw
+})
+```
+
+This scaffold approach gives the agent a bounded task: translate the SPEC comment into `it()` blocks. The output is predictable, the import path is set, and the conventions are already applied. Contrast this with the open-ended "write tests for my token estimator" prompt — that version requires the agent to discover your conventions, infer your file layout, and make architecture choices. The scaffold removes all of that from the agent's context budget and from your review burden.
+
+<Callout type="tip" title="Use the cheap model for the scaffold phase too">
+If your project has many test files with consistent structure, a cheap model can generate the scaffold from a template before the capable model fills in the test cases. Two cheap invocations and one moderate one replaces one expensive one — the loop stays fast throughout.
+</Callout>
+
+## The audit pipeline: cheap → verify → capable
+
+One of the most reliable patterns observed in practice is a multi-stage pipeline where model tier matches task difficulty. From a large security audit remediation spanning 123 findings across 7 domain batches (Source: packet-E, F-14):
+
+> (1) Sonnet planner re-verified findings against the live branch; (2) Sonnet TDD implementer wrote tests first, then implementation; (3) **Haiku verifier checked gates** — test count, diff coverage, regression detection — the cheap model was used here specifically because the task is mechanical; (4) an adversarial reviewer looked for regressions and false fixes; (5) Sonnet fixer addressed review findings.
+
+The cheap model (Haiku) at step 3 is the key insight. Verification is a gating task: does the count of new tests meet the minimum? Does the diff touch only the intended files? Does re-running the suite produce zero failures? These are yes/no questions that a fast, cheap model answers correctly and quickly. Escalating to a capable model for mechanical verification wastes both money and wall-clock time.
+
+<Mermaid chart={`
+flowchart TD
+    SPEC["Specification / failing test\n(human-authored or agent-drafted)"]
+    RED["Red phase\nCheap agent drafts failing tests\nfrom spec"]
+    GREEN["Green phase\nCheap agent generates\nminimal implementation"]
+    GATE["Verification gate\nCheap model: test count, diff scope,\nno regressions"]
+    REFACTOR["Refactor phase\nCapable model applies\nstructural improvements"]
+    DONE["Commit — suite green,\ncode clean"]
+
+    SPEC --> RED
+    RED --> GREEN
+    GREEN --> GATE
+    GATE -- "gate fails: send back" --> GREEN
+    GATE -- "gate passes" --> REFACTOR
+    REFACTOR --> DONE
+    DONE -.->|"next increment"| SPEC
+`} />
+
+The gate between Green and Refactor is inexpensive to run on every cycle. It catches the most common failure modes — tests that were accidentally removed, diffs that drifted outside their intended scope, or implementations that silently pass by making tests trivially true — before the capable model ever sees the code.
+
+## Keeping the gate honest
+
+The verification gate only works if it cannot be passed by a technically-correct-but-wrong implementation. Two common honesty problems:
+
+**The trivial-pass problem.** An agent under pressure to make tests pass can sometimes write an implementation that hard-codes the test inputs and returns their expected outputs. The test suite turns green; the implementation is useless. The fix is to include at least one test that uses an input not mentioned in the spec:
+
+```typescript
+it('handles inputs not enumerated in the spec', () => {
+  // Use a value that was not part of the scaffold SPEC.
+  const result = estimateTokens('hello world how are you today')
+  expect(result).toBeGreaterThan(0)
+  expect(result).toBeLessThan(20)
+})
+```
+
+This forces generalization without requiring a full property-based test suite.
+
+**The deleted-test problem.** If the agent's task is to make the suite pass, deleting failing tests is technically a valid strategy. The verification gate should check that the test count in the target file has not decreased:
+
+```bash
+# Cheap model invokes this as its first gate check
+TEST_COUNT=$(grep -c '^\s*it(' src/lib/__tests__/tokenEstimator.test.ts)
+echo "Test count: $TEST_COUNT"
+[ "$TEST_COUNT" -ge 5 ] || { echo "GATE FAIL: test count dropped"; exit 1; }
+```
+
+A three-line bash snippet and an exit code is all the gate needs. (Source: packet-A, §5 — exit 2 from a hook blocks the next tool call; the same exit-code semantics apply to inline checks.)
+
+<Callout type="warning" title="A green suite is not the same as a correct implementation">
+The test suite is your specification, not a proof of correctness. An agent that passes your tests has met your specification — no more. Write your specifications carefully. Test the boundary conditions. Include at least one test that the agent could not have seen during implementation.
+</Callout>
+
+## Practical prompt shapes for each phase
+
+The agent's prompt in each phase should be narrow enough to complete in a small number of turns. Open-ended prompts produce open-ended context growth.
+
+**Red phase prompt:**
+```
+Given the SPEC comment in `src/lib/__tests__/tokenEstimator.test.ts`,
+fill in the it() blocks.
+- One it() per bullet in SPEC.
+- Add one extra it() for an unstated edge case.
+- Run `pnpm vitest run src/lib/__tests__/tokenEstimator.test.ts`
+  to confirm the new tests fail (they should — the implementation does not exist yet).
+- Do not create the implementation file.
+```
+
+**Green phase prompt:**
+```
+The test file `src/lib/__tests__/tokenEstimator.test.ts` has failing tests.
+Create `src/lib/tokenEstimator.ts` with the minimal implementation to make them pass.
+Run `pnpm vitest run src/lib/__tests__/tokenEstimator.test.ts` after each attempt.
+Stop when the suite is fully green. Do not add untested logic.
+```
+
+**Refactor phase prompt:**
+```
+All tests in `src/lib/__tests__/tokenEstimator.test.ts` are passing.
+Refactor `src/lib/tokenEstimator.ts`:
+- Extract any duplicated logic.
+- Improve variable names for clarity.
+- Run the suite after each change. Stop immediately if any test turns red.
+Do not change the function's public interface.
+```
+
+Notice that each prompt names the exact file, names the exact test command, and ends with a constraint. The narrow scope keeps the agent's context budget focused and makes the output easy to verify.
+
+## Worktrees make TDD isolation safe
+
+Each TDD feature should live in its own git worktree. This is not optional ergonomics — it is what prevents a failing Red phase from contaminating a passing Green phase that is already in progress on another feature.
+
+```bash
+# Create a worktree for the token estimator feature
+git worktree add ../feature-token-estimator -b feat/token-estimator origin/dev
+
+# The agent runs inside this worktree directory
+# Its test failures never touch the main checkout
+```
+
+When the Red phase produces a legitimately failing test and commits it, that commit lives in the feature worktree's branch. The main checkout and every other feature worktree remain untouched. The loop's intermediate state is isolated by default. (Source: packet-E, F-10)
+
+<Callout type="note" title="Session memory is also per-worktree">
+Claude Code stores session history under a directory derived from the working directory. A worktree at `../feature-token-estimator` gets its own session entry — separate from the main project. When you resume TDD on that feature after a break, the session history is where you left it, not mixed with other features' histories.
+</Callout>
+
+## What the full loop looks like end to end
+
+```
+1. Human writes scaffold (SPEC comment + file structure) — 5 minutes.
+2. Red agent (cheap model) fills in it() blocks, runs suite, confirms failure — 1–3 turns.
+3. Green agent (cheap model) creates implementation, runs suite, confirms all green — 2–5 turns.
+4. Verification gate (cheap model or bash script) checks count + scope + no regressions — 1 turn.
+5. Refactor agent (capable model) applies structural improvements, runs suite after each change — 2–4 turns.
+6. Human reviews the diff: tests + implementation + any refactors — 5–10 minutes.
+7. Commit and move to the next increment.
+```
+
+Steps 2–5 are agent-driven. Steps 1, 6, and 7 are human-driven. The human's time is spent on specification (what the code should do) and verification (does the diff reflect that?), not on the mechanical work in between.
+
+The loop is fast when the environment is built for it: a focused test runner, pre-approved test commands, a bounded scaffold, a cheap verification gate, and a worktree that isolates each feature's intermediate state.
+
+## Recap
+
+TDD with low-cost agents works because the Red → Green → Refactor cycle has predictable phases with predictable difficulty. The Red and Green phases are specification-to-code translation problems — fast, mechanical, and well-suited to cheap models. The Refactor phase requires structural judgement and benefits from a more capable model. A verification gate between Green and Refactor catches honesty failures — trivial passes and deleted tests — before they reach review.
+
+The environment matters as much as the prompts: focused test commands, pre-approved permissions, file scaffolds that encode conventions, and per-feature worktrees that isolate intermediate state.
+
+The next chapter covers parallel agent orchestration — how to run multiple TDD loops simultaneously on disjoint parts of a codebase, dispatch the right model tier to each, and collect the results without conflicts.

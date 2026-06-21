@@ -1,0 +1,79 @@
+# How to use this book & pick your path
+
+This book is one chapter pool shared across three reader tracks — Beginner, Engineer, and Automator. Each track is a curated sequence through those chapters, ordered to match your starting point and goals. By the end of this short orientation you will know which track fits you, how the book saves your progress, and how to switch paths any time.
+
+## Three tracks, one pool
+
+Every chapter belongs to one or more tracks. When you choose a track the sidebar reorders itself to show only the chapters that matter for your path, in the right sequence. A chapter that appears in all three tracks — like this one — contains notes pitched at each audience, but you only ever see it once.
+
+Here is how the tracks differ:
+
+| Track | Who it is for | Depth |
+|---|---|---|
+| **Beginner** | Curious people with little or no coding background | Plain language, no APIs, small wins |
+| **Engineer** | Developers integrating Claude into software | API details, tool use, production concerns |
+| **Automator** | Power users wiring Claude into workflows | Step-by-step, integration-first, minimal code |
+
+<Callout type="tip" title="Not sure which track fits?">
+Answer two questions below and the widget will recommend a track and drop you at your first chapter. You can always switch later — your progress carries over.
+</Callout>
+
+<PathPicker />
+
+## How the tracks share chapters
+
+Think of each track as a reading list, not a separate book. The same underlying chapters are shared; what changes is which ones appear and in what order.
+
+<Mermaid chart={`graph LR
+  A[Chapter pool] --> B[Beginner sequence]
+  A --> C[Engineer sequence]
+  A --> D[Automator sequence]
+  B --> E[Your sidebar]
+  C --> E
+  D --> E
+`} />
+
+When you switch tracks mid-way, the chapters you have already marked done stay marked. If a completed chapter also exists on your new track it shows as done there too. Nothing is lost.
+
+## How progress and resume work
+
+Progress is stored entirely in your browser's `localStorage` under the key `cb:progress`. There is no account, no login, and no server. Two practical consequences:
+
+- **Clearing browser data resets your progress.** If you care about your place, note the chapter ID from the URL (e.g. `/c/what-is-an-llm`) before clearing.
+- **Progress does not sync across devices.** Open the same URL on another machine and you start fresh.
+
+When you return to the book the sidebar offers a **Resume** link that takes you to the first chapter in your current track that is not yet marked done. Marking a chapter done is a manual step — there is a button at the bottom of each page. This keeps you in control: skim a chapter you already know and tick it immediately, or sit with a hard one before marking it complete.
+
+Your active track is also stored in `localStorage` under `cb:track`. It persists across browser sessions until you change it.
+
+## Switching tracks
+
+You can change your track any time from the sidebar or by retaking the two-question quiz on this page. The manifest knows which chapters belong to which track, so the sidebar updates instantly. There is no penalty for switching — treat the tracks as lenses, not locked lanes.
+
+<Callout type="note" title="If you are genuinely between tracks">
+Engineer and Automator chapters overlap more than either overlaps with Beginner. If you write code but care most about productivity workflows, start on Automator — you can dip into Engineer chapters via the search palette whenever you want the API-level detail.
+</Callout>
+
+## How this book is organised
+
+Chapters are grouped into parts (shown in the sidebar as section headers):
+
+- **P0 — Orientation** (you are here): mental models and navigation
+- **P1 — First Contact**: your first real interaction with the API
+- **P2 — The Harness**: Claude Code and the tool surface
+- **P3 — Context Engineering**: what goes into the context window and why
+- **P4 — Prompting & Spec Engineering**: writing instructions that hold up
+- **P5 — Multi-Agent Orchestration**: chaining models and tasks
+- **P6 — The Dev Workflow**: Claude in your everyday coding loop
+- **P7 — Extending Claude**: MCP, custom tools, plugins
+- **P8 — Automation & Integrations**: webhooks, n8n, Zapier, scripts
+- **P9 — Mastery & Power User**: advanced patterns and edge cases
+- **P10 — Reference**: quick-reference tables and checklists
+
+Not every track visits every part. Beginner skips most of P5 and P7; Automator skips the API deep-dives in P1 and P6.
+
+## Your next step
+
+The first chapter in every track is the same: **What is an LLM, fundamentally?** It builds the one mental model that makes everything else click — why Claude predicts tokens, what the context window actually is, and why confident-sounding wrong answers happen. Understanding that foundation pays dividends in every chapter that follows.
+
+Once you have chosen a track above, use the **Next →** link at the bottom of each page to move through your sequence without thinking about navigation.

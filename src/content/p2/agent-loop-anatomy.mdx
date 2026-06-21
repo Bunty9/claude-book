@@ -1,0 +1,180 @@
+# Anatomy of the agent loop
+
+The previous part established how Claude thinks turn by turn. This chapter zooms in on what happens when Claude is given a task that requires *doing* something — reading files, running commands, calling services — not just talking. You will see each phase of the agent loop labelled and explained, understand how the pieces connect, and leave with a clear mental model for building on top of them.
+
+## From chat to action
+
+A plain chat session is passive: you write, Claude writes back. An **agent session** adds a new capability — Claude can invoke tools and receive their results before it sends you a final answer. That turns the single loop of the chat into a tighter inner loop that keeps spinning until the work is done.
+
+The engine driving that inner loop is called the **agent harness** in Claude Code. Every agent-capable Claude product shares the same underlying shape: assemble a context, call the model, dispatch any tool calls, collect results, and repeat. Only when the model produces output with no tool calls does the loop terminate and hand you the result.
+
+<Callout type="note" title="One loop, many surfaces">
+Whether you are using Claude Code in the terminal, embedding the SDK in a Node.js service, or running a workflow with parallel subagents, all of them execute this same fundamental loop. The details differ; the skeleton does not.
+</Callout>
+
+## The six phases, dissected
+
+<HarnessExplorer />
+
+Click each node in the explorer above to read its role and see how it connects to its neighbours. The sections below narrate the same journey in prose.
+
+### Phase 1 — Context assembly
+
+Before the model sees anything, the harness assembles an **append-only message array**. This is the conversation so far, expressed as a list of messages with roles (`system`, `user`, `assistant`). Every piece of information Claude will ever see in this turn must be in that array — there is no out-of-band channel.
+
+What lands in context on turn one:
+
+- The **system prompt**: standing instructions, persona, rules, output format constraints. In Claude Code this is where `CLAUDE.md` content is injected, along with built-in engineering instructions.
+- The **tool definitions**: a schema for each tool Claude is allowed to call — name, description, parameters. Claude reads these to know what actions are available.
+- The **user message**: your task or question.
+
+From turn two onward, the array also includes every previous assistant response and every tool result from prior turns. Context is cumulative and append-only; nothing is ever removed (unless compaction runs, which we cover in a moment).
+
+<Callout type="tip" title="Static parts are prompt-cached automatically">
+The system prompt, tool definitions, and `CLAUDE.md` are identical on every turn in a session. Claude Code automatically applies **prompt caching** to these static prefixes after the first request, so you are not paying full token costs to re-encode them on every loop iteration.
+</Callout>
+
+### Phase 2 — Model call
+
+The harness sends the assembled context to the model and begins streaming the response. The model produces tokens until it decides it is done, which can happen in two ways:
+
+1. **Text-only response.** Claude writes an answer without invoking any tool. This ends the loop.
+2. **Tool call response.** Claude writes one or more structured tool-call blocks — each naming a tool and providing the arguments — and then stops generating. This sends the loop to phase 3.
+
+An important nuance: a single model response can contain **multiple tool calls at once**. Claude Code handles parallel and sequential tool dispatch differently based on what is safe:
+
+- **Read-only tools** (`Read`, `Glob`, `Grep`, and any tool annotated `readOnlyHint`) can run concurrently in a single batch.
+- **State-modifying tools** (`Edit`, `Write`, `Bash`) run sequentially, one at a time, to avoid races.
+
+This distinction is handled automatically by the harness — you do not need to manage it.
+
+**Effort levels** affect how much reasoning the model does before producing its response. The spectrum runs from `low` through `medium`, `high`, `xhigh`, to `max`. Higher effort means more thinking tokens consumed per turn, which trades cost for quality on complex tasks. The effort level is set once for a session and applies to every turn in the loop.
+
+### Phase 3 — Tool dispatch
+
+For each tool call in the model's response, the harness checks permissions and then executes:
+
+```
+model output: { "tool": "Bash", "args": { "command": "ls src/" } }
+              ↓
+         permission check
+              ↓
+         execute tool
+              ↓
+         collect stdout/stderr
+```
+
+If permission is denied — because no allow rule matches and the user declines, or because a `deny` rule fires — the loop still continues. The harness synthesises a "permission denied" tool result and feeds it back to the model, which can then decide whether to try a different approach or surface the problem to you.
+
+Read-only tools that were batched together all execute in parallel during this phase. Their results are collected and then all returned to the model in phase 4.
+
+### Phase 4 — Results injection
+
+Tool results are wrapped in `UserMessage` blocks and appended to the context array. From the model's perspective, results look exactly like user messages — they are just another turn in the conversation, with special role markers that indicate they came from a tool rather than a human.
+
+The full tool-result block includes the output text, any error information, and a `tool_use_id` that correlates the result back to the specific tool call that produced it. The harness maintains this correlation automatically.
+
+This is the phase where **context growth** is most acute. A single `Bash` command that produces verbose output, or a `Read` of a large file, can cost thousands of tokens in a single turn. Managing what you ask the model to read is the primary lever for controlling session cost and longevity.
+
+### Phase 5 — Loop check
+
+After injecting results, the harness asks: should we go around again?
+
+The answer is **yes** (another model call) unless one of these is true:
+
+| Condition | Result |
+|---|---|
+| Last model response had no tool calls | Loop terminates — emit `ResultMessage(success)` |
+| Turn count hit `maxTurns` | Loop terminates — emit `ResultMessage(error_max_turns)` |
+| Spend crossed `maxBudgetUsd` | Loop terminates — emit `ResultMessage(error_max_budget_usd)` |
+| Unrecoverable execution error | Loop terminates — emit `ResultMessage(error_during_execution)` |
+
+Without explicit limits, the loop runs indefinitely. This is deliberate: autonomous tasks can be long. But it means that open-ended prompts on production systems should always carry a `maxTurns` or `maxBudgetUsd` guard.
+
+### Phase 6 — Result emission
+
+When the loop terminates cleanly, the harness emits a `ResultMessage` carrying:
+
+- The **final text** from the last model response.
+- **Token usage** — input tokens, output tokens, and cache hit/miss breakdown.
+- **Cost** — computed from usage, useful for logging.
+- **Session ID** — a stable identifier you can use to resume or fork the session later.
+
+The five `ResultMessage` subtypes are: `success`, `error_max_turns`, `error_max_budget_usd`, `error_during_execution`, and `error_max_structured_output_retries`. Your code (or Claude Code itself) surfaces these differently — success shows the answer; error subtypes show an explanation and, where possible, what partial work completed.
+
+## The compaction escape hatch
+
+There is one more mechanism that can interrupt the loop without ending it: **automatic compaction**.
+
+As context grows toward the model's limit, the harness summarises older parts of the conversation into a compact representation and replaces them with that summary. A `compact_boundary` system message is emitted to mark where the summarisation occurred. The loop continues from that boundary with a smaller context.
+
+Compaction is intentionally transparent — the loop keeps running, and the model receives a coherent-enough summary to continue the task. The trade-off is that fine details from early turns are lossy after compaction. For tasks where exact earlier outputs matter, it is worth structuring work so that key results are written to files (which persist on disk) rather than kept only in the message array (which can be compacted away).
+
+<Callout type="warning" title="Compaction is lossy">
+After compaction the model can no longer see the literal text of early tool outputs — only the summary. If a later step needs an exact value from an early step, write it to a file or return it as a structured result before the context fills up.
+</Callout>
+
+## Seeing the loop in practice
+
+Here is a minimal SDK snippet (TypeScript) that shows the loop from the outside. The `query()` call drives the loop; your code just iterates the emitted messages:
+
+```typescript
+import { query } from '@anthropic-ai/claude-agent-sdk'
+
+for await (const message of query({
+  prompt: 'Count the TypeScript files in src/ and report the total.',
+  maxTurns: 10,
+})) {
+  if (message.type === 'assistant') {
+    // Intermediate response — may contain tool calls
+    process.stdout.write(message.text ?? '')
+  }
+  if (message.type === 'result') {
+    console.log('\nDone. Cost:', message.costUsd, 'USD')
+  }
+}
+```
+
+Internally, on a task like this, the loop would look roughly like:
+
+<Mermaid chart={`sequenceDiagram
+    participant H as Harness
+    participant M as Model
+    participant T as Tool runtime
+
+    H->>M: Context (system prompt + task)
+    M->>H: ToolCall: Bash("find src -name '*.ts' | wc -l")
+    H->>T: Execute Bash
+    T->>H: Result: "42"
+    H->>M: Context + tool result
+    M->>H: Text: "There are 42 TypeScript files."
+    H-->>H: No tool call → terminate
+    H->>H: Emit ResultMessage(success)
+`} />
+
+Two model calls, one tool call, one result. The loop ran once and exited.
+
+## What engineers control
+
+The loop itself is fixed. What you can tune:
+
+| Knob | Effect |
+|---|---|
+| `maxTurns` | Hard cap on tool-use round trips (default: unlimited) |
+| `maxBudgetUsd` | Hard cap on spend per run |
+| `effortLevel` | Reasoning depth per model call (`low` → `max`) |
+| `permissionMode` | How aggressively to auto-approve tool calls |
+| Tool allow/deny rules | Which tools can run without user confirmation |
+| `autoCompactEnabled` | Whether auto-compaction fires near the context limit |
+
+For beginners: the default values are sensible for interactive use. You only need to reach for these when building automated pipelines or long-running tasks.
+
+For engineers embedding the SDK: set `maxTurns` and `maxBudgetUsd` on every production `query()` call. Unlimited loops are a correctness hazard (infinite tool retry) and a cost hazard (runaway spend). Add them first, tune later.
+
+## Recap
+
+The agent loop has six phases: **context assembly** (build the message array) → **model call** (produce text or tool calls) → **tool dispatch** (execute, respecting permissions and parallelism rules) → **results injection** (append results to context) → **loop check** (repeat or terminate based on exit conditions) → **result emission** (return final text, usage, cost, session ID).
+
+The loop terminates naturally when the model produces a response with no tool calls. Safety valves (`maxTurns`, `maxBudgetUsd`) terminate it early. Compaction can shrink the context mid-run without stopping the loop.
+
+The next chapter turns from structure to **strategy** — how to write system prompts and task descriptions that steer the loop toward reliable, predictable behaviour.

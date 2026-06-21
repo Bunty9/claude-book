@@ -1,0 +1,174 @@
+# Your first real task, end to end
+
+You have Claude Code installed and you understand permissions. Now it is time to complete something real — a task with a clear start, a middle you can watch, and a finish you can verify. By the end of this chapter you will have the loop in your fingers, not just your head, and you will know exactly what to do the next time you sit down with Claude.
+
+## Picking a task that fits
+
+The ideal first task is small, bounded, and easy to check. Something like:
+
+- "Summarise every TODO comment in this codebase into a single list."
+- "Write a README for this project."
+- "Explain what this function does and suggest a simpler version."
+
+For this walkthrough we will use: **write a `CONTRIBUTING.md` for a small project you already have on disk**. It is concrete (you end up with a real file), slightly open-ended (Claude has to make sensible choices), and easy to judge (you can read the result and decide if it is right).
+
+If you do not have a project handy, create a minimal one:
+
+```bash
+mkdir my-first-claude-task && cd my-first-claude-task
+echo "# My Project\n\nA small utility for processing CSV files." > README.md
+git init && git add . && git commit -m "init"
+```
+
+That is enough structure for Claude to work with.
+
+## Step 1 — Open a session in your project directory
+
+Navigate to the project root in your terminal, then start Claude Code:
+
+```bash
+cd my-first-claude-task
+claude
+```
+
+Claude will read any `CLAUDE.md` file in the directory (there is not one yet — that is fine), load the available tool set, and show you a prompt. You are now inside a session scoped to this directory.
+
+<Callout type="tip" title="Always start from the project root">
+Claude's tools navigate relative to the directory you launched from. Starting from the project root means `Read`, `Glob`, and `Bash` all work with paths you expect. If you launch from a subdirectory, Claude may miss files in parent folders.
+</Callout>
+
+## Step 2 — Give Claude a clear, specific prompt
+
+Type your instruction and press Enter:
+
+```
+Read the existing files in this project, then write a CONTRIBUTING.md
+that covers: how to set up a dev environment, how to run tests (if any
+exist), the branch and PR conventions, and the code style expectations.
+Keep it short — one page is enough.
+```
+
+A few things make this prompt work well:
+
+- **It names the output file explicitly.** Claude knows to create `CONTRIBUTING.md`, not something else.
+- **It lists the sections you expect.** Claude will not have to guess what belongs in a contributing guide.
+- **It sets a length target.** Without that, Claude might write three pages.
+
+You do not need magic words or special formatting. Plain language instructions are what Claude is trained on.
+
+## Step 3 — Watch the agent loop run
+
+After you press Enter, Claude does not reply immediately. Instead you will see tool calls appear:
+
+```
+● Reading: README.md
+● Searching: **/*.{json,toml,yaml,yml}
+● Searching: **/*.{test,spec}.*
+```
+
+Claude is exploring your project before writing anything. This is the agent loop in action — the same cycle from the previous chapter, but now you can watch each tool execute in real time.
+
+<Mermaid chart={`sequenceDiagram
+    participant You
+    participant Claude
+    participant Tools
+
+    You->>Claude: Write a CONTRIBUTING.md
+    Claude->>Tools: Glob — find all files
+    Tools-->>Claude: [README.md, package.json, ...]
+    Claude->>Tools: Read — read README.md
+    Tools-->>Claude: # My Project ...
+    Claude->>Tools: Write — create CONTRIBUTING.md
+    Tools-->>Claude: ✓ File written
+    Claude-->>You: Done. Here is what I wrote and why.
+`} />
+
+Read-only tools (`Read`, `Glob`, `Grep`) run silently — no permission prompt. When Claude reaches the `Write` call to create `CONTRIBUTING.md`, you will see a prompt:
+
+```
+Claude wants to write: CONTRIBUTING.md
+Allow? [y/n/always/explain]
+```
+
+Press `y` to approve this one write, or `always` to allow all file writes without asking again for this session. For a first session, `y` keeps you in the loop without being disruptive.
+
+## Step 4 — Read the result critically
+
+Once Claude finishes you will see two things: the content of `CONTRIBUTING.md` in the terminal output, and a short summary of what Claude did and why it made the choices it made.
+
+Open the file:
+
+```bash
+cat CONTRIBUTING.md
+```
+
+Read it as if you were a new contributor to your project. Ask yourself:
+
+- Does the dev setup section match how you actually install dependencies?
+- Did Claude invent a test command, or does it match what is in `package.json`?
+- Is the tone right for your project?
+
+This is the most important part of the workflow: **you are the final reviewer**. Claude produces a first draft, not a final document. Your judgment is what turns a good first draft into something you would actually commit.
+
+<Callout type="warning" title="Claude fills gaps with reasonable assumptions">
+If your project has no test runner configured, Claude will write something generic like "run your test suite before submitting a PR." That is not wrong, but it is vague. The fix is easy: tell Claude explicitly what to put there, or update `CONTRIBUTING.md` yourself afterward. Do not assume Claude's first pass is complete just because it looks polished.
+</Callout>
+
+## Step 5 — Iterate in the same session
+
+If something is off, do not start over. The existing context — the files Claude already read, the draft it already wrote — is still in the session. Use it:
+
+```
+The test section is too generic. This project uses pytest.
+Update that section to say: "Run `pytest -v` from the project root."
+```
+
+Claude will call `Edit` to make a targeted change to the file it already wrote. You will see exactly which lines change before they are applied:
+
+```
+Edit CONTRIBUTING.md
+  - run your test suite before submitting a PR
+  + run `pytest -v` from the project root
+Allow? [y/n/always/explain]
+```
+
+One short follow-up and the doc is tighter. This is the normal rhythm: prompt → review → refine → done.
+
+## Step 6 — Verify and close out
+
+Once you are happy, do a final check:
+
+```bash
+git diff --stat
+```
+
+You should see `CONTRIBUTING.md` listed as a new file. Check that no other files were modified — Claude should have only created that one file. If something unexpected changed, `git diff` will show you exactly what.
+
+When everything looks right, commit:
+
+```bash
+git add CONTRIBUTING.md
+git commit -m "docs: add CONTRIBUTING.md"
+```
+
+You have completed the loop. You gave Claude a clear task, watched the tool calls run, approved the write, reviewed the output, iterated once, and verified the result before committing. That sequence — **prompt → watch → approve → review → iterate → verify** — is the same workflow you will follow for tasks ten times more complex.
+
+## What made this work
+
+Looking back at what you just did, a few things kept it on track:
+
+| Practice | Why it matters |
+|---|---|
+| Specific prompt with named output | Claude did not have to guess the file name or structure |
+| Watching tool calls | You knew what Claude read before it wrote, so surprises were rare |
+| Approving writes one at a time | You stayed in control of what hit your filesystem |
+| Reading the output critically | You caught the vague test section before it was committed |
+| Iterating in the same session | Claude reused existing context — faster and cheaper than starting over |
+
+<Callout type="note" title="Context carries across the session">
+Everything Claude read and wrote in this session is still in its context window. A follow-up prompt like "now turn CONTRIBUTING.md into a PR template" would not require re-reading the project files — Claude already has them. Long sessions reuse this context efficiently; static parts such as the system prompt, tool definitions, and CLAUDE.md are prompt-cached after the first request, while file reads remain in the append-only conversation history and count toward the context limit.
+</Callout>
+
+## Recap
+
+You completed a real task end to end: a bounded prompt, a watched agent loop, a write approval, a review, one iteration, and a verified commit. The workflow is the same regardless of task size — the loop just runs more turns for harder problems. In the next part we look at the full tool surface available to Claude and how to shape which tools it can reach.

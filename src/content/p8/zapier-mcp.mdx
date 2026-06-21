@@ -1,0 +1,188 @@
+# Zapier MCP & connecting SaaS
+
+Zapier MCP turns Claude into an operator of thousands of SaaS products — with nothing more than a URL and a natural-language prompt. By the end of this chapter you will understand how Zapier MCP works mechanically, how to set it up in under five minutes, and how to build multi-app sequences that used to require four browser tabs and ten minutes of manual clicking.
+
+---
+
+## The problem it solves
+
+Claude is good at reasoning, drafting, and planning. But the moment you need an action to happen in the real world — add a row to Google Sheets, create a HubSpot contact, post a Slack message — the conversation hits a wall. Without integration, the best Claude can do is tell you what to type somewhere else.
+
+MCP (Model Context Protocol) is the open standard, introduced by Anthropic in November 2024, that lets Claude call external tools directly. Zapier MCP is a hosted MCP server that sits in front of Zapier's entire app library and exposes those actions to any MCP-capable AI client. Claude tells Zapier what to do; Zapier authenticates with the target app and does it. (Source: [zapier.com/blog/mcp](https://zapier.com/blog/mcp/))
+
+<Callout type="note" title="Zaps and MCP are complementary, not competing">
+Zaps are scheduled or trigger-based automation — "when X happens, do Y automatically." Zapier MCP is on-demand: Claude calls an action because a user asked for it in a conversation. Think of Zaps as the pipeline that runs in the background, and MCP as giving Claude hands to reach into that same app library whenever it needs to. (Source: [zapier.com/blog/zapier-mcp-guide](https://zapier.com/blog/zapier-mcp-guide/))
+</Callout>
+
+---
+
+## How Zapier MCP works
+
+Each Zapier MCP server you create is a personal endpoint that fronts any subset of Zapier's app catalog. You choose which apps and actions to expose; Zapier stores the credentials; Claude calls the actions without ever seeing an API key.
+
+<Mermaid chart={`sequenceDiagram
+    participant U as You (Claude chat)
+    participant C as Claude
+    participant Z as Zapier MCP Server
+    participant A as Target App (e.g. HubSpot)
+
+    U->>C: "Add this lead to HubSpot and ping Slack"
+    C->>Z: tools/call { name: "hubspot_create_contact", args: {...} }
+    Z->>A: authenticated API call
+    A-->>Z: success + new contact ID
+    Z-->>C: result JSON
+    C->>Z: tools/call { name: "slack_send_message", args: {...} }
+    Z-->>C: result JSON
+    C-->>U: "Done — contact created, Slack notified."
+`} />
+
+The protocol under the hood is JSON-RPC 2.0. Each tool call executes one action. Multi-step sequences — like the HubSpot + Slack example above — are handled by Claude calling tools in sequence; Zapier itself does not chain them. (Source: [goodcall.com/voice-ai/zapier-mcp](https://www.goodcall.com/voice-ai/zapier-mcp))
+
+---
+
+## Setup: five steps, under five minutes
+
+1. Go to [mcp.zapier.com](https://zapier.com/mcp) and sign in with your Zapier account.
+2. Click **Create MCP server** and give it a name (e.g. "Work assistant").
+3. Use the **Add tools** search to find the apps and actions you want Claude to be able to call. Start with three to five actions — you can add more later.
+4. Copy the server URL from the **Connect** tab.
+5. Paste that URL into your AI client's MCP settings.
+
+For Claude.ai (claude.ai), the MCP server URL goes in **Settings → Integrations → Add integration**. For Claude Code, add it to your project's `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "zapier": {
+      "type": "url",
+      "url": "https://mcp.zapier.com/api/mcp/s/<your-server-id>/mcp"
+    }
+  }
+}
+```
+
+That's it. Claude will list the available Zapier tools alongside its built-in tools for the rest of the session.
+
+<Callout type="warning" title="Treat the server URL as a secret">
+The server URL is the only credential between Claude and all the apps you have connected. Anyone who has it can call those actions as you. Do not commit it to a public repository. If it is ever exposed, rotate it from the Zapier Connect tab — a new URL is issued immediately and the old one stops working. (Source: [goodcall.com/voice-ai/zapier-mcp](https://www.goodcall.com/voice-ai/zapier-mcp))
+</Callout>
+
+---
+
+## What to put on your server
+
+Zapier exposes over 9,000 apps and 30,000 actions. Dumping all of them onto a single MCP server is counterproductive — Claude will have a harder time choosing the right tool, and every tool definition costs context tokens. A leaner server is a better server.
+
+A practical starting set for an automator who wants to get things done quickly:
+
+| Category | Example actions to add |
+|---|---|
+| Communication | Slack: send message; Gmail: send email |
+| CRM / leads | HubSpot: create/update contact; search contacts |
+| Project tracking | Linear: create issue; Notion: append to page |
+| Scheduling | Google Calendar: create event; find free time |
+| Data | Google Sheets: append row; Airtable: create record |
+| Publishing | Buffer: create post; Webflow: publish item |
+
+Add one action per use case. You do not need both "send email" and "create draft" unless you deliberately want Claude to draft instead of send.
+
+---
+
+## Worked examples
+
+### Example 1: lead qualification in one prompt
+
+Without MCP, qualifying an inbound lead means opening HubSpot, pulling the contact, switching to a CRM enrichment tool, scoring the result, then composing a follow-up. With Zapier MCP and tools for HubSpot search, enrichment lookup, and Gmail send, a single Claude prompt can do it:
+
+> "The lead from the form is Priya Mehta, priya@example.com, said she's evaluating options for Q3. Search HubSpot for her, if she exists update the notes, if not create a new contact tagged 'Q3-eval', and send her our intro email template."
+
+Claude calls the tools in order, reports back what it found or created, and surfaces the contact link. What used to take ten minutes across four apps happens in one exchange.
+
+### Example 2: meeting prep brief
+
+> "I have a call with Acme Corp in 30 minutes. Pull their last three Zendesk tickets, find their Stripe subscription tier, and create a Google Doc called 'Acme brief — [today's date]' with a summary."
+
+Claude queries Zendesk (search tickets by org), queries Stripe (fetch customer), then calls Google Docs (create document) with a draft it has written from the results. The brief is ready before you finish your coffee.
+
+### Example 3: content publishing pipeline
+
+> "Take the draft in Notion page 'Blog draft — June', generate three Twitter/X variations, schedule the best one in Buffer for tomorrow at 9 AM, and post a link in the #content-team Slack channel."
+
+Claude reads the Notion page, drafts the variations, picks one (or asks you to), calls Buffer to schedule, then calls Slack to notify the team. Four apps, one prompt. (Source: [zapier.com/blog/automate-claude-zapier-mcp](https://zapier.com/blog/automate-claude-zapier-mcp/))
+
+---
+
+## Understanding the app ecosystem
+
+<EcosystemExplorer />
+
+The widget above shows the broader MCP server landscape. Zapier MCP covers the widest surface — over 9,000 apps — because it wraps Zapier's existing credential and integration infrastructure, which has been built up over more than a decade. First-party MCP servers (GitHub, Supabase, Linear, Figma, Stripe, and others) go deeper on their own apps but are narrower in scope. The two approaches are complementary: use a first-party server when you need advanced, app-specific operations; use Zapier MCP when you want breadth across the long tail of SaaS. (Source: [zapier.com/mcp](https://zapier.com/mcp))
+
+---
+
+## Task costs and free-tier math
+
+Every Zapier MCP tool call consumes two tasks from your Zapier plan's monthly quota — the same bucket used by Zaps. (Source: [goodcall.com/voice-ai/zapier-mcp](https://www.goodcall.com/voice-ai/zapier-mcp))
+
+The MCP feature itself is included on all plans at no extra charge; only the task consumption varies.
+
+A five-step Claude sequence (say: search contacts + enrich + score + update CRM + send email) costs ten tasks. Plan accordingly if you are on a lower-tier plan and expect to use MCP heavily alongside your existing Zaps.
+
+<Callout type="tip" title="Reserve high-volume tasks for Zaps, not MCP">
+MCP is best for on-demand, conversational actions where you are driving the intent. Recurring high-volume operations (like syncing a spreadsheet every hour) are cheaper and more reliable as a Zap — they run at a fixed task rate without requiring a Claude conversation to trigger them.
+</Callout>
+
+---
+
+## Authentication and security model
+
+Zapier MCP offers two authentication modes:
+
+**API key** — you paste a personal API key once during setup. The key is tied to your Zapier account. Best for individual use.
+
+**OAuth 2.0** — end users complete a Zapier login flow. Best when you are building a product where other people need their own Zapier connections, not yours.
+
+For most automators, API key is the right choice. The key is stored in Zapier's infrastructure (SOC 2 Type II certified); the raw tokens for connected apps are never exposed to Claude or to you directly. This is the same credential model that Zapier has used for all Zaps — over 13 years of credential infrastructure. (Source: [zapier.com/mcp](https://zapier.com/mcp))
+
+Enterprise accounts add fine-grained action controls, domain restrictions, and AI Guardrails, and require admin approval before enabling MCP. (Source: [goodcall.com/voice-ai/zapier-mcp](https://www.goodcall.com/voice-ai/zapier-mcp))
+
+---
+
+## Limitations to know before you rely on it
+
+**One action per call, no built-in chaining.** If Claude needs to do five things, it makes five tool calls in sequence. There is no Zapier-side workflow chaining via MCP — that's what Zaps are for. If a step fails midway, Claude will surface the error, but there is no automatic rollback.
+
+**Context depends on Claude's tool-selection accuracy.** The more actions you add to a server, the higher the chance Claude picks the wrong one. Precise action names and a small, curated tool list reduce this risk.
+
+**Task quota is shared.** If your Zaps are already using most of your monthly quota, MCP calls eat into the same pool. Monitor your usage under Zapier → Usage.
+
+**Actions are not idempotent by default.** Calling "send email" twice sends two emails. If you are iterating in a conversation and Claude retries, it may execute the action again. For writes and sends, confirm before Claude calls the tool if the action is hard to undo.
+
+---
+
+## Zapier MCP vs building your own MCP server
+
+If you need breadth — tens of different SaaS products, short setup time, no maintenance — Zapier MCP is the right call. If you need depth — custom logic, proprietary APIs not in Zapier's catalog, specific data transforms before the action fires — building a purpose-built MCP server (as covered in the previous chapter) gives you more control.
+
+| | Zapier MCP | Custom MCP server |
+|---|---|---|
+| Setup time | Under 5 minutes | Hours to days |
+| App coverage | 9,000+ | Whatever you wire up |
+| Custom logic | None | Full control |
+| Maintenance | Zapier maintains it | You maintain it |
+| Task cost | 2 tasks per call | No Zapier cost |
+| Best for | Breadth, speed, SaaS integrations | Proprietary APIs, complex transforms |
+
+The two are not mutually exclusive. A `.mcp.json` can list both a Zapier MCP entry and one or more custom servers. Claude will pick the right tool from the combined list based on the tool descriptions.
+
+---
+
+## Recap
+
+- Zapier MCP is a hosted MCP server that gives Claude access to over 9,000 apps. Setup takes five minutes: create a server, choose actions, paste the URL into your AI client.
+- Each tool call costs two Zapier tasks. The MCP feature itself is included in all plans.
+- Multi-step sequences work by Claude calling tools in order; there is no server-side chaining. Zaps handle recurring, trigger-based automation; MCP handles on-demand, conversational actions.
+- Keep your server URL secret — rotate it immediately if it is ever exposed.
+- A lean, curated set of actions (five to fifteen) makes Claude more accurate than a server with hundreds of tools.
+
+**Next:** The following chapter explores building a personal automation system end-to-end — combining scheduled Zaps, MCP for on-demand actions, and n8n for custom AI-native workflows into a stack that runs with minimal maintenance.

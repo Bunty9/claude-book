@@ -1,0 +1,156 @@
+# Install & first session
+
+By the end of this chapter you will have Claude Code running on your machine, understand the three main ways to reach it (CLI, desktop app, and IDE extension), and have completed a real first session — not a toy "hello world," but an interaction that shows you what the tool actually does. Nothing in here requires prior AI experience; if you can open a terminal and install a package, you are ready.
+
+## Ways to run Claude Code
+
+Claude Code is fundamentally a CLI tool — a process you launch in your terminal that can read files, run shell commands, and talk to the Claude API on your behalf. That CLI is also the engine underneath two other surfaces: a native desktop app and IDE extensions for VS Code and JetBrains. All three share the same agent loop and the same configuration system, so skills you learn in one transfer directly to the others.
+
+<Callout type="tip" title="Which surface should I start with?">
+If you are new to Claude Code, start with the CLI. It shows you exactly what is happening — tool calls, permissions, token counts — with nothing hidden. Once you are comfortable, the desktop app and IDE extensions add convenience without removing any capability.
+</Callout>
+
+### The CLI
+
+The CLI is distributed as an npm package. You need Node.js installed (any recent LTS version works). Install it globally:
+
+```bash
+npm install -g @anthropic-ai/claude-code
+```
+
+That puts the `claude` binary on your `PATH`. Verify:
+
+```bash
+claude --version
+```
+
+You should see a version string. If you see a "command not found" error, check that your npm global bin directory is on your `PATH` — `npm bin -g` will show you where it is.
+
+### The desktop app
+
+The desktop app wraps the same CLI engine in a native window with a sidebar, persistent session list, and OS-level notifications. Download the installer for your platform from [claude.ai/download](https://claude.ai/download). The app self-updates by default; you can pin it to the `stable` channel (one week behind `latest`) by setting `autoUpdatesChannel: "stable"` in your settings if you prefer a slower cadence.
+
+### IDE extensions
+
+**VS Code:** install the "Claude Code" extension from the VS Code Marketplace. It adds a panel that opens a Claude Code session scoped to your current workspace, with inline diff previews when files are edited.
+
+**JetBrains:** install the "Claude Code" plugin from the JetBrains Marketplace. Works in IntelliJ IDEA, PyCharm, WebStorm, GoLand, and the other JetBrains IDEs.
+
+Both extensions are thin UI wrappers — they run the same CLI binary under the hood, so the same `.claude/settings.json` file and `CLAUDE.md` that you configure for the CLI apply automatically.
+
+## Authenticating
+
+Claude Code needs credentials to call the Claude API. On first run it will prompt you:
+
+```
+claude
+```
+
+You will be asked to choose between two auth methods:
+
+- **claude.ai login** — sign in with your claude.ai account (Pro, Max, Team, or Enterprise plan). This is the easiest path if you already have a subscription.
+- **API key** — set the environment variable `ANTHROPIC_API_KEY` to a key from [console.anthropic.com](https://console.anthropic.com). This is the right choice for scripting, CI, or if you want direct usage control.
+
+For a personal laptop where you are the only user, the claude.ai login is simpler. For anything automated — a CI job, a server, a script you will run headlessly — use an API key.
+
+<Callout type="note" title="Environment variable approach">
+If you set `ANTHROPIC_API_KEY` in your shell profile (`.zshrc`, `.bashrc`, etc.) before running `claude` for the first time, the CLI will pick it up automatically and skip the auth prompt. This is the cleanest setup for API key users.
+</Callout>
+
+## Your first session
+
+Open your terminal, navigate to a project directory you are comfortable experimenting in (or create an empty one), and run:
+
+```bash
+claude
+```
+
+You will see a prompt appear. You are now talking to a Claude model that can see your filesystem, run commands, and edit files — all subject to your permission approvals.
+
+Let's run a real interaction, not a greeting. Ask Claude to explain the project:
+
+```
+What does this project do? Give me a 3-sentence summary.
+```
+
+What happens next illustrates the core loop. Claude will call a few read-only tools — probably `Glob` to find files and `Read` to inspect key ones — then synthesize an answer. Watch the tool calls appear on screen as they happen. Each one is labelled with the tool name and the arguments Claude chose.
+
+Notice that these read-only operations did not prompt you for permission. That is by design: `Read`, `Glob`, and `Grep` are considered safe to run without approval. If Claude tries to do something that could modify state — run a shell command, edit a file — you will see a permission prompt and can approve or reject it.
+
+### The agent loop in one picture
+
+Every turn follows the same cycle:
+
+<Mermaid chart={`flowchart LR
+    A([Your prompt]) --> B[Claude reasons]
+    B --> C{Tool calls?}
+    C -- Yes --> D[Tools execute]
+    D --> E[Results fed back]
+    E --> B
+    C -- No --> F([Response delivered])
+`} />
+
+The loop terminates naturally when Claude produces a response with no further tool calls. For most questions this takes one or two turns. For larger tasks — refactoring a module, writing tests across a codebase — it may take many turns.
+
+## Key things to observe in your first session
+
+**Permission prompts.** The first time Claude tries to run a shell command you will see:
+
+```
+Claude wants to run: git status
+Allow? [y/n/always/explain]
+```
+
+- `y` approves once
+- `always` adds a permanent allow rule for this command pattern
+- `n` denies, and Claude will try a different approach
+- `explain` asks Claude to justify why it wants to run the command
+
+You control the blast radius. Claude cannot do anything to your system that you have not approved.
+
+**The permission mode indicator.** At the bottom of the CLI you will see the current mode. `Shift+Tab` cycles through three modes: `normal` (prompt for everything dangerous), `acceptEdits` (auto-approve file edits and common filesystem ops), and `plan` (read-only exploration — file edits always prompt, never auto-approved). Plan mode is useful when you want to understand what Claude would do before letting it touch anything.
+
+**Slash commands.** Type `/` to see what is available. The most useful ones to know immediately:
+
+| Command | What it does |
+|---|---|
+| `/help` | Lists all commands including any custom ones you've defined |
+| `/compact` | Summarises older history to free up context space |
+| `/clear` | Starts a fresh context (new conversation, same session) |
+| `/usage` | Shows token consumption and estimated cost for this session |
+
+## Useful configuration from day one
+
+Claude Code is highly configurable, and most of the configuration lives in `~/.claude/settings.json` (your personal settings, applies everywhere) or `.claude/settings.json` inside a project directory (project-specific, can be committed to git).
+
+You do not need to touch configuration to get started. But two settings are worth knowing early:
+
+**`CLAUDE.md` — project instructions.** Create a file called `CLAUDE.md` in your project root. Write anything you would tell a new team member: what the project does, conventions to follow, commands to run before making changes. Claude reads this file automatically at the start of every session. It is prompt-cached after the first request, which means repeated reads are charged at a sharply reduced rate — but the content still counts against your context window on every turn.
+
+```bash
+# In your project root
+echo "# My Project\n\nAlways run \`npm test\` before editing source files." > CLAUDE.md
+```
+
+**Auto-memory.** Claude can persist facts across sessions to a local memory directory (`~/.claude/memory/` by default). This is enabled by default. If you prefer fully stateless sessions, add `"autoMemoryEnabled": false` to your user settings.
+
+<Callout type="tip" title="Start with a real task">
+The fastest way to understand what Claude Code can do is to give it a task you would actually want done, not a demonstration. Pick something modest and bounded: "find all TODO comments in this repo and summarise them," "write a README for this library," or "explain what this function does and suggest a simpler implementation." The tool becomes intuitive quickly once you see the loop in action on real work.
+</Callout>
+
+## How the surfaces compare
+
+For reference, here is when each surface tends to be the right choice:
+
+| Surface | Best for |
+|---|---|
+| CLI | Learning, scripting, SSH sessions, maximum transparency |
+| Desktop app | Long sessions, multiple concurrent threads, push notifications, non-technical tasks |
+| VS Code extension | Code-focused work where you want inline diff previews alongside your editor |
+| JetBrains plugin | Same as VS Code, in JetBrains IDEs |
+
+## What you have now
+
+You have Claude Code installed, authenticated, and have run a first session. You know where permission prompts come from and how to control them. You have seen the agent loop complete a turn. And you know the two pieces of configuration — `CLAUDE.md` and user settings — that make Claude immediately useful in your project.
+
+The next chapter covers the agent loop in depth: how turns work, what the context window contains at each step, how compaction prevents you from running out of space, and how to think about cost as you build more complex sessions.

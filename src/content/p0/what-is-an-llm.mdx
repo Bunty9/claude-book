@@ -22,7 +22,7 @@ Token counts matter for two practical reasons. First, every API call is priced p
 
 The context window is the model's entire working memory for a conversation. It contains the system prompt, every message in the conversation so far, any documents you've pasted in, and the outputs of any tools the model called. Nothing outside the context window exists for the model — it cannot look it up, reference it, or be influenced by it.
 
-Modern Claude models have very large context windows (hundreds of thousands of tokens), but they are still finite. When a conversation grows long enough to approach the limit, older content gets dropped. This is why very long sessions can lose track of details mentioned hours ago.
+Modern Claude models have very large context windows (hundreds of thousands of tokens), but they are still finite. When a conversation grows long enough to approach the limit, older content is compacted or summarised to make room. This is why very long sessions can lose fidelity on details mentioned hours ago.
 
 Practically: if something matters, make sure it is in the context. Don't assume Claude "remembers" something from a previous session — each new conversation starts with a blank context.
 

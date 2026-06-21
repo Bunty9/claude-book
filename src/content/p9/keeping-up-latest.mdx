@@ -1,0 +1,177 @@
+# Keeping up with the latest
+
+The Claude Code ecosystem moves quickly — a release can land a major new primitive in a single changelog entry. This chapter gives you the durable signals, the right sources to watch, and a curated map of the repos and plugins worth trying right now, so you stop discovering things six months after they shipped.
+
+---
+
+## Why this is harder than it looks
+
+Most software ecosystems move at a pace you can follow with a monthly check-in. Claude Code is not one of them. The changelog has seen multiple releases per week, each capable of changing what is possible: sub-agents spawning sub-agents five levels deep, implicit agent teams replacing explicit team management, a new hook lifecycle event. If you only read announcement posts you will miss the small entries that unlock disproportionate leverage.
+
+The other wrinkle is that the ecosystem splits into three distinct layers, each moving on its own clock:
+
+<Mermaid chart={`graph TD
+    A["Claude Code CLI<br/>(weekly releases)"] --> B["Plugin & skill<br/>marketplace<br/>(new plugins daily)"]
+    B --> C["MCP ecosystem<br/>(15,000+ servers,<br/>+1,000/month)"]
+    A --> C
+
+    style A fill:var(--color-accent),color:#fff
+    style B fill:var(--color-tip),color:#fff
+    style C fill:var(--color-bg-subtle)
+`} />
+
+Changes to the CLI unlock new plugin capabilities. New plugins raise the ceiling on what the MCP ecosystem can address. Following only one layer gives you a partial picture.
+
+---
+
+## The durable live sources
+
+These are the places to check regularly — they stay current by design rather than requiring someone to curate them.
+
+### The official changelog
+
+`code.claude.com/docs/en/changelog` is the primary source of truth for CLI releases. Each entry maps a version number to specific features, with links to the relevant documentation page when a change requires explanation. This is the fastest signal for new primitives: the entry for v2.1.172 is where you learn that sub-agents can spawn sub-agents; the entry for v2.1.157 is where you learn that `claude plugin init <name>` exists.
+
+Scan the changelog at the start of each week. The entries are dense and short — a full week's worth takes about five minutes. Filter for entries that mention: `hook`, `agent`, `plugin`, `model`, `fallback`, `safe-mode`, or any primitive you use actively. (Source: [code.claude.com/docs/en/changelog](https://code.claude.com/docs/en/changelog))
+
+### PulseMCP
+
+`pulsemcp.com` tracks over 15,000 MCP servers, updated daily, growing at roughly 1,000 new servers per month. The signal-to-noise ratio is lower here than in the official changelog — most new servers are narrow or experimental — but the daily-updated "trending" and "recently added" feeds surface what the community is actually building and adopting. Use it when you have a new integration need: search before you build. (Source: [pulsemcp.com/servers](https://www.pulsemcp.com/servers); [digitalapplied.com/blog/mcp-adoption-statistics-2026](https://www.digitalapplied.com/blog/mcp-adoption-statistics-2026-model-context-protocol))
+
+### The official plugin marketplace
+
+Browse the official marketplace in-app with `/plugin > Discover` or at `claude.com/plugins`. The `anthropics/claude-plugins-official` repo on GitHub has a `plugins/` directory where you can read the source of every official plugin — useful both for evaluating what to install and for understanding what a well-structured plugin looks like. The community marketplace (`anthropics/claude-plugins-community`) is the fastest-growing catalogue; add it with:
+
+```bash
+/plugin marketplace add anthropics/claude-plugins-community
+```
+
+New submissions arrive regularly after the review-gated process passes. Check it monthly. (Source: [code.claude.com/docs/en/discover-plugins](https://code.claude.com/docs/en/discover-plugins))
+
+### Third-party aggregators
+
+A few community-run sites synthesize across the official sources:
+
+| Site | What it tracks |
+|---|---|
+| `claudemarketplaces.com` | Daily-updated GitHub aggregation across skills, MCP, and plugins |
+| `claudefa.st` | Running changelog digest and curated add-on catalog |
+| `mcpmanager.ai` | Adoption statistics — the 50 most-used MCP servers by actual usage count |
+| `smithery.ai` | Hosted MCP servers with usage metrics and OAuth automation |
+
+These are useful complements to the official sources when you want popularity signals rather than recency signals. A server with thousands of installs on Smithery has been tested in ways that a newly-published one has not.
+
+---
+
+## The newest things worth trying
+
+The items below were the highest-novelty additions as of mid-2026. They are grounded in the official changelog and packet research — no invented version strings or benchmark claims.
+
+### `security-guidance` plugin (official, May 2026)
+
+Reviews every change Claude writes for common vulnerabilities and instructs Claude to fix them within the same session. Unlike a post-hoc audit, this plugin operates continuously — each file edit passes through the review layer before you move on. Install it for any project that ships to production:
+
+```bash
+/plugin install security-guidance@claude-plugins-official
+```
+
+This is a strong default for engineering workflows. The context cost is meaningful but bounded: you are paying for a security reviewer on every change, which is the trade-off. (Source: [code.claude.com/docs/en/discover-plugins](https://code.claude.com/docs/en/discover-plugins); [cybersecuritynews.com/anthropic-updates-claude-code](https://cybersecuritynews.com/anthropic-updates-claude-code/))
+
+### Sub-agents spawning sub-agents (v2.1.172, June 2026)
+
+Sub-agents can now delegate to sub-agents, up to five levels deep. This enables genuinely hierarchical orchestration: a planning agent spawns domain specialists, each specialist spawns reviewers, reviewers spawn fixers. Combined with the implicit agent teams introduced in v2.1.178 — where every session has a team by default, no `TeamCreate` or `TeamDelete` required — the orchestration primitives have simplified considerably.
+
+The practical ceiling moved: work that previously required a single sprawling session can now be decomposed into a tree where each node has a narrowly scoped context. (Source: [code.claude.com/docs/en/changelog](https://code.claude.com/docs/en/changelog))
+
+<Callout type="tip" title="Each sub-agent node gets its own project directory">
+Every Claude Code sub-agent session writes to its own `~/.claude/projects/` entry, scoped to the worktree or directory it is running in. This means session memory (via the `remember` plugin or similar) is isolated per sub-agent by default — which is usually what you want when agents are working on disjoint parts of a codebase.
+</Callout>
+
+### `fallbackModel` setting (v2.1.166, June 2026)
+
+You can now specify up to three ordered fallback models in `settings.json`. If the primary model is unavailable or over capacity, Claude Code automatically tries the next model in the list without surfacing an error to you. This is a reliability primitive, not just a cost knob:
+
+```json
+{
+  "model": "claude-opus-4-8",
+  "fallbackModel": ["claude-sonnet-4-6", "claude-haiku-4-5"]
+}
+```
+
+Useful in CI pipelines and automation contexts where a hard failure on model unavailability would require a retry loop. (Source: [code.claude.com/docs/en/changelog](https://code.claude.com/docs/en/changelog))
+
+### MCP Enterprise-Managed Authorization (stable June 2026)
+
+Enterprise-Managed Authorization (EMA) reached stable status on June 18, 2026. It replaces per-user OAuth consent screens with a zero-touch IdP-delegated flow: your organization administrator configures the MCP server authorization once, and every team member gets access without individual login prompts. Okta is the first supported identity provider.
+
+The servers that launched with EMA support: Asana, Atlassian, Canva, Figma, Granola, Linear, and Supabase. If you are on a Team or Enterprise plan and your organization uses any of these tools, EMA is the right way to give your whole team access to the same MCP integrations without token management overhead. Configuration done in Claude applies automatically to Claude Code and Cowork.
+
+(Source: [blog.modelcontextprotocol.io/posts/enterprise-managed-auth](https://blog.modelcontextprotocol.io/posts/enterprise-managed-auth/); [techtimes.com — EMA stable](https://www.techtimes.com/articles/318708/20260619/mcp-enterprise-authorization-goes-stable-zero-touch-sso-okta-anthropic-vs-code.htm))
+
+### `post-session` lifecycle hook (v2.1.169)
+
+A new `post-session` hook fires after a session completes. On self-hosted runners, this is the right place to snapshot uncommitted work, archive the session JSONL, or trigger a downstream notification. It joins the existing lifecycle hooks (`PreToolUse`, `PostToolUse`, `SessionStart`, `SessionEnd`, `PreCompact`, `PostCompact`) and rounds out the automation surface for session-level orchestration. (Source: [code.claude.com/docs/en/changelog](https://code.claude.com/docs/en/changelog))
+
+---
+
+## Repos worth bookmarking
+
+The widget below covers the full ecosystem map — plugins, MCP servers, community repos, and tools, filterable by type and use case:
+
+<EcosystemExplorer />
+
+Three specific repos stand out for recency and leverage:
+
+**`rohitg00/awesome-claude-code-toolkit`** (Everything Claude Code) — the highest-activity community aggregation point as of mid-2026. It contains over 135 agents, 35 curated skills, 42 commands, 176+ plugins, 20 hooks, 15 rule templates, and 14 MCP configs in a portable, version-controlled format. Browse the `skills/` and `agents/` directories when you are looking for a pattern that someone has likely already solved. (Source: [github.com/rohitg00/awesome-claude-code-toolkit](https://github.com/rohitg00/awesome-claude-code-toolkit))
+
+**`yamadashy/repomix`** — packs an entire repository into one AI-friendly file. `npx repomix` in any project produces a single document optimized for dropping into context. The Chrome extension adds a "Pack" button to GitHub repo pages, and there is a companion MCP server (`repomix-mcp`) that exposes the same context-packing as a tool Claude can call directly during a session. Useful when a sub-agent needs to reason about a codebase it has not yet explored. (Source: [github.com/yamadashy/repomix](https://github.com/yamadashy/repomix))
+
+**`modelcontextprotocol/typescript-sdk` and `/python-sdk`** — if you are building your own MCP server, start here. The official SDKs are actively maintained and the closest thing to a specification with examples. Both repos are the right read before looking at any third-party MCP framework. (Source: [github.com/modelcontextprotocol/typescript-sdk](https://github.com/modelcontextprotocol/typescript-sdk))
+
+---
+
+## A sustainable update cadence
+
+Rather than trying to track everything, a weekly rhythm with a clear hierarchy works:
+
+```
+Monday morning (5 min)
+  ├─ Scan changelog since last Monday
+  └─ Note any new primitive that affects your active workflow
+
+Monthly (15 min)
+  ├─ Browse /plugin > Discover — sort by "New"
+  ├─ Check community marketplace for new submissions
+  └─ Scan PulseMCP "recently added" for your integration categories
+
+Quarterly (30 min)
+  ├─ Audit /plugin list --enabled — prune unused installs
+  ├─ Review awesome-claude-code-toolkit for new patterns
+  └─ Check MCP governance announcements (AAIF blog)
+```
+
+<Callout type="warning" title="Context cost accumulates with every installed plugin">
+Each installed plugin — especially those that add MCP servers or background monitors — contributes to the context window on every turn, even when you are not using it. A graveyard of forgotten integrations quietly degrades response quality and increases per-turn cost. The quarterly audit above is not optional maintenance; it is how you keep the system fast. Run `/plugin list --enabled` and uninstall anything you have not actively invoked in the past month.
+(Source: [code.claude.com/docs/en/discover-plugins](https://code.claude.com/docs/en/discover-plugins))
+</Callout>
+
+---
+
+## What stays stable
+
+Amid rapid change, some things move slowly enough to be treated as durable foundations:
+
+- **The MCP protocol itself** — governed by the Linux Foundation's Agentic AI Foundation (AAIF) with AWS, Google, Microsoft, OpenAI, and others as founding members. Multi-vendor governance prevents lock-in and means the protocol is safe to build on. (Source: [anthropic.com/news/donating-the-model-context-protocol](https://www.anthropic.com/news/donating-the-model-context-protocol-and-establishing-of-the-agentic-ai-foundation))
+- **The skill and hook format** — these have not changed structurally since the plugin system launched. A skill you write today will still work when the CLI version increments.
+- **The CLAUDE.md / settings.json / hooks pipeline** — the configuration surface that runs your project-level automations is stable. Invest in it without worrying about churn.
+- **Worktree discipline** — this is not a Claude Code primitive; it is a git primitive. It will not deprecate.
+
+The volatile layer is the specific model names and capabilities, the set of available plugins, and the surface area of any given MCP server. Treat those as subject to change; design your workflows to be model-agnostic where possible, and pin only when you have a concrete reason.
+
+---
+
+## Recap
+
+The changelog at `code.claude.com/docs/en/changelog` is your primary signal — weekly, five minutes, filter for primitives you use. PulseMCP and the plugin marketplace cover the ecosystem; the quarterly audit keeps your context lean. The four newest things worth trying are `security-guidance`, nested sub-agents, `fallbackModel`, and MCP Enterprise-Managed Authorization. The MCP protocol, skill format, and CLAUDE.md pipeline are stable enough to invest in without hedging.
+
+**Next:** the final reference chapter covers the complete settings.json schema, all hook lifecycle events, and the full CLAUDE.md format specification — the machine-readable foundation under everything this book has covered.

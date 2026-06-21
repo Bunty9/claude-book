@@ -1,0 +1,219 @@
+# Code review — adversarial subagent panels
+
+An adversarial review panel dispatches multiple independent subagents over the same diff, each probing a different failure mode, then synthesises the findings before a single line of code merges. This chapter explains how panels work, why independence matters, when to use a cheap verifier versus a deep reviewer, and how the verify-before-claim discipline prevents the most common quality failure in autonomous coding: confident changes that are subtly wrong.
+
+## The problem with single-agent review
+
+When Claude writes a feature and then reviews it, both roles share the same context. The implementation decisions — the assumptions that were made, the shortcuts taken, the edge cases that were mentally noted and then not written down — remain active in the same model state. The reviewer starts knowing the author's intent, which makes it harder to see what the code actually does versus what the author meant it to do.
+
+This is not a model failure. It is a structural problem: a reviewer with full context is less likely to find the gaps in that context. The fix is not a better prompt — it is isolation.
+
+<Callout type="note" title="Why isolation matters more than effort level">
+Raising the effort level of a single-agent review (more reasoning tokens, longer thinking time) helps find bugs within the author's frame of reference. A panel of independent agents finds bugs *outside* that frame — the ones the author genuinely could not see because their context did not include them.
+</Callout>
+
+## What an adversarial panel is
+
+An adversarial panel is a fan-out of N named subagents over a static target — typically a diff or a set of files — where each agent is given a distinct review mandate. The mandates are adversarial by design: each agent is instructed to find a specific class of failure and to report confidently rather than hedging.
+
+Each subagent:
+- Starts with a fresh context (no knowledge of the parent session or the other reviewers)
+- Receives the same diff as input but a different system prompt
+- Is instructed to assume the code is wrong until it can prove otherwise
+- Reports findings with concrete evidence: file path, line number, proof of impact
+
+The parent collects all N finding sets, deduplicates, ranks by severity, and produces a consolidated review. The key insight is that no individual agent needs to be comprehensive — it needs to be deep on its mandate. Breadth comes from the ensemble.
+
+<AgentOrchestrationVisualizer />
+
+The visualizer shows several panel shapes. The review preset is closest to what this chapter describes: multiple agents reading the same input in parallel, converging on a ranked finding list.
+
+## A concrete panel: the dynamic roles case study
+
+In one large RBAC implementation — dynamic roles across two repos, approximately 32 commits — an 8-agent review panel was dispatched before merge. The mandates covered: security logic, database migrations, API contract stability, error handling and process safety, frontend parity, permission matrix correctness, integration test coverage, and regression detection.
+
+The panel caught 7 critical and 11 high-severity issues before the PR merged. Two findings stand out as illustrative. (Source: packet-E, F-16)
+
+**The JWT crash**: A synchronous `jwt.verify()` call was placed inside an async `.then()` chain in a socket event handler. In JavaScript, a synchronous throw inside a `.then()` callback becomes an unhandled promise rejection, not a caught error. The production process was crashing approximately every 12 minutes — every time an invalid token hit that path. The error-handling reviewer caught it. The author had not caught it in testing because test tokens were always valid.
+
+**The stale action list**: A constant `ALL_ACTIONS` was hardcoded in the permissions module. When four new RBAC actions were added as part of the same feature, nobody updated the constant. The "Add role" button was silently hidden for all users, including super-admins. The permission matrix reviewer caught it by checking that all actions in the codebase appeared in the constant — a mechanical check that no human reviewer had run.
+
+Neither finding would have been discovered by raising the effort level of a single reviewer. Both required an agent whose job was to look for exactly that failure class, starting from scratch.
+
+## Designing the mandates
+
+The quality of a panel comes from its mandate design. A weak mandate is: "review this diff for bugs." A strong mandate is: "assume this diff contains a race condition. Find it. If you cannot find a race condition, check for synchronous throws in async handlers, unhandled promise rejections, and state mutations that are not atomic. Report the three most likely issues with file and line evidence."
+
+Effective mandates share four properties:
+
+**Specific failure class** — not "security" but "IDOR vulnerabilities in query parameters" or "unvalidated user-controlled input reaching a database query". Specificity narrows the search space and produces denser findings.
+
+**Adversarial prior** — the agent assumes the bug exists and is hunting for evidence, not auditing with an open mind. "Find the race condition" produces different attention than "check if there are any race conditions".
+
+**Evidence requirement** — findings without file/line/proof are noise. Requiring "reproduce the failure with a minimal calling sequence" forces the agent to verify its claim before reporting it.
+
+**Known failure class list** — give each agent a ranked checklist of what to look for if its primary mandate comes up empty. This prevents agents from returning empty-handed on clean sections and wasting their token budget on vague observations.
+
+```
+---
+name: process-safety-reviewer
+description: Reviews code for crashes, unhandled rejections, and synchronous throws in async paths.
+model: claude-sonnet-4-5
+tools:
+  - Read
+  - Grep
+  - Glob
+maxTurns: 20
+---
+
+You are a process-safety reviewer. Your job: find code that will crash the process.
+
+Start with this checklist:
+1. Synchronous throws inside .then() / .catch() callbacks
+2. Uncaught promise rejections (async functions with no try/catch)
+3. Missing null guards on values from external sources (req.body, DB rows, env vars)
+4. Event emitter listeners that throw synchronously
+
+For each finding: file path, line range, the exact call sequence that triggers the crash, and a one-sentence fix.
+
+Assume the code contains at least one crash site. If you finish the checklist without finding one, try the patterns again with fresh attention on the error-handling paths.
+```
+
+## The verify-before-claim discipline
+
+Panel review only works if each agent verifies its claims before reporting them. An unverified finding is a guess. It wastes the integrator's time, erodes trust in the panel, and can cause correct code to be reverted.
+
+The verify-before-claim discipline has a simple rule: **an agent may not report a finding it cannot demonstrate**. Demonstration means one of:
+
+- Showing the code path that reaches the bug (trace from an entry point to the failure site)
+- Writing a minimal reproduction test and running it
+- Finding a test that should exist and does not
+- Quoting two code locations that contradict each other
+
+This is stricter than it sounds. Many apparent bugs turn out to be handled correctly elsewhere — the input is validated upstream, the database query is already wrapped in a transaction, the null case is caught by a caller the agent had not read. Require evidence before reporting.
+
+<Callout type="warning" title="Confident wrong findings are worse than silence">
+A panel that generates 30 findings and 20 of them are false positives does not help — it creates review fatigue and trains the developer to ignore reports. Mandate evidence. Accept zero findings on a clean section as a valid outcome. A reviewer that says "I audited the migration path and found no unsafe ALTER operations" is providing signal, not failing its job.
+</Callout>
+
+The practical implementation: in the agent's system prompt, include an explicit step before reporting. Something like: "Before adding a finding to your report, trace the code path from the entry point to the failure. If the path does not exist, do not report it. If you are not certain, say you are not certain and explain what additional evidence would confirm it."
+
+## Choosing the right model per mandate
+
+Not all mandates require the same model. A finding that requires tracing through 15 levels of async call chains and reasoning about JavaScript's promise semantics benefits from Sonnet-class reasoning. A finding that requires mechanically checking that every action string in a constant matches a grep output does not.
+
+The audit remediation pipeline (packet-E, F-14) was explicit about this: Haiku handled the verification stage (does the diff cover all 123 findings? are all tests present?) because that is counting and pattern-matching. Sonnet handled planning, implementation, and final fixing because those require reasoning about correctness under edge conditions.
+
+The cost difference is significant. Assigning a Sonnet to every mandate, including mechanical ones, multiplies panel cost without proportional quality gain. Assign based on the cognitive demand of the mandate, not as a blanket policy.
+
+```
+Mandate classification:
+
+  Mechanical (Haiku):
+  - "Do all new routes have tests?"
+  - "Does this migration cover all affected tables?"
+  - "Are all new env vars documented?"
+
+  Reasoning (Sonnet):
+  - "Can this permission check be bypassed?"
+  - "Is this state update atomic under concurrent requests?"
+  - "Will this query scale at 10× current row count?"
+```
+
+## Panel topology: when to fan out vs. pipeline
+
+Two distinct shapes serve different purposes.
+
+**Fan-out** (parallel panel): all agents read the same diff simultaneously, produce independent findings, and return. The parent aggregates. Use this when you want maximum coverage of a static artifact and reviewer independence is the priority. This is the right shape for pre-merge review.
+
+**Pipeline** (sequential stages): one agent's output becomes the next agent's input. Each stage refines or gates the previous. Use this when you need a quality ladder — implement, then verify, then adversarially review the verify step. The audit remediation pipeline was a pipeline: planner → implementer → verifier → adversarial reviewer → fixer. Each stage was bounded because it received a compact summary from the prior stage, not its full context. (Source: packet-E, F-14)
+
+<Mermaid chart={`
+graph TD
+    D["diff / target files"]
+
+    subgraph "Fan-out panel (parallel)"
+        D --> A1["Security reviewer"]
+        D --> A2["Process-safety reviewer"]
+        D --> A3["Migration reviewer"]
+        D --> A4["Test-coverage reviewer"]
+        A1 & A2 & A3 & A4 --> AGG["Aggregator: deduplicate + rank"]
+        AGG --> REPORT["Ranked finding report"]
+    end
+
+    subgraph "Quality pipeline (sequential)"
+        IMPL["Implementer"] --> V["Verifier (Haiku)"]
+        V -- "pass" --> AR["Adversarial reviewer"]
+        V -- "fail" --> IMPL
+        AR -- "findings" --> FIX["Fixer"]
+        FIX --> MERGE["Ready to merge"]
+    end
+
+    style AGG fill:var(--tip-subtle),color:var(--fg)
+    style REPORT fill:var(--tip-subtle),color:var(--fg)
+    style MERGE fill:var(--tip-subtle),color:var(--fg)
+    style V fill:var(--note-subtle),color:var(--fg)
+`} />
+
+The two shapes can be combined. Run the quality pipeline to produce a well-tested implementation. Then run a fan-out panel over the final diff before merge. The pipeline ensures correctness; the panel ensures the implementation has no blind spots the author missed.
+
+## Practical setup: running a panel as a skill
+
+The simplest way to run a repeatable panel is to encode it as a skill. The skill receives the PR number or diff path as an argument, dispatches the subagents, and returns the consolidated report. (Source: packet-A, §8)
+
+```markdown
+---
+name: adversarial-review
+description: Run an adversarial multi-agent review panel over the current diff. Pass a PR number or leave blank for working tree diff.
+allowed-tools:
+  - Agent
+  - Bash
+  - Read
+argument-hint: "[pr-number]"
+---
+
+# Adversarial Review Panel
+
+Get the diff:
+- If $ARGUMENTS is a PR number: `gh pr diff $ARGUMENTS`
+- Otherwise: `git diff main...HEAD`
+
+Dispatch the following agents in parallel, each receiving the diff as context:
+
+1. Agent("security-reviewer") — IDOR, injection, auth bypass
+2. Agent("process-safety-reviewer") — crashes, unhandled rejections, race conditions
+3. Agent("contract-reviewer") — API breaking changes, type mismatches
+4. Agent("migration-reviewer") — schema safety, rollback viability
+5. Agent("test-coverage-reviewer") — missing tests, untested error paths
+
+Collect all findings. Deduplicate by file+line. Sort by severity: critical → high → medium → low.
+
+Present as a ranked list. For each finding: severity, mandate that found it, file:line, one-sentence description, suggested fix.
+```
+
+Invoke with `/adversarial-review 247` before merging PR #247. The skill handles the orchestration; you review the ranked findings.
+
+## What panels do not replace
+
+Panels are not a substitute for typed APIs, automated test suites, or static analysis. They are an additional layer that catches what those tools miss — the semantically correct but logically wrong code, the integration assumptions that were never written down, the edge case that only appears under a specific calling sequence.
+
+<Callout type="tip" title="Run the mechanical gates first">
+Before dispatching a panel, run `tsc`, `eslint`, and your test suite. Panels are expensive. Spending them on type errors that the compiler would catch is waste. The panel's job is to find what the compiler and tests missed — not to replace them.
+</Callout>
+
+Think of the layers as a stack:
+
+1. Type checker — catches type errors
+2. Linter — catches style and obvious correctness issues
+3. Test suite — catches regressions in covered paths
+4. Panel review — catches reasoning errors, integration failures, and blind spots
+
+Each layer is cheap relative to the one above it. Run cheap gates first.
+
+## Recap
+
+Adversarial subagent panels work because reviewer isolation breaks the shared-context problem: each agent starts fresh, sees the diff without the author's assumptions, and applies its mandate without influence from the other reviewers. Fan-out topology gives breadth; adversarial mandates give depth; the verify-before-claim discipline keeps findings credible.
+
+Design mandates around specific failure classes, not general quality. Assign model tier by cognitive demand. Require evidence before a finding is reportable. Treat zero findings on a clean section as signal, not failure.
+
+The next chapter covers the hook system — how to wire these review panels, verification gates, and quality checks into your session lifecycle automatically, so they run without requiring you to remember to invoke them.

@@ -1,0 +1,267 @@
+# Permissions & modes deep dive
+
+The six permission modes are a single dial on a much richer control surface. This chapter peels back the layers: how each mode actually decides what to run, where `plan` mode gets its read-only guarantee, what the Bash sandbox enforces that deny rules cannot, and how to wire CI pipelines that never hang on a permission prompt.
+
+## The control surface as a stack
+
+Before going mode-by-mode, it helps to see all the pieces together. Every tool call Claude makes passes through this decision stack, top to bottom, stopping at the first match:
+
+<Mermaid chart={`
+flowchart TD
+    A["Tool call requested"] --> B{"Managed deny rule?"}
+    B -- yes --> DENY["Deny — hard block"]
+    B -- no --> C{"PermissionRequest hook\n(exit 2)?"}
+    C -- yes --> DENY
+    C -- no --> D{"PreToolUse hook\n(exit 2)?"}
+    D -- yes --> DENY
+    D -- no --> E{"Allow rule matches?"}
+    E -- yes --> ALLOW["Run — no prompt"]
+    E -- no --> F{"Permission mode?"}
+    F -- "bypassPermissions" --> ALLOW
+    F -- "dontAsk" --> DENY
+    F -- "auto" --> G["Model classifier decides"]
+    F -- "acceptEdits\n(file op?)" --> ALLOW
+    F -- "plan\n(file edit?)" --> PROMPT["Prompt user"]
+    F -- "default" --> PROMPT
+    PROMPT --> H{"User approves?"}
+    H -- yes --> ALLOW
+    H -- no --> DENY
+`} />
+
+The implication: **deny rules and blocking hooks win before the mode even matters.** Mode is the fallback policy for calls that no rule has claimed.
+
+<Callout type="note" title="auto mode is TypeScript SDK only">
+The `auto` branch in the diagram uses a model classifier to approve or deny each tool call. It is available only in the TypeScript Agent SDK — not in the CLI. CLI sessions use `default`, `acceptEdits`, `plan`, `dontAsk`, or `bypassPermissions`.
+</Callout>
+
+## Plan mode — the read-only guarantee
+
+Plan mode's promise is that nothing on disk changes without your approval. The mechanism is precise: in plan mode, file-edit tool calls (`Edit`, `Write`, `NotebookEdit`) are never auto-approved — they always surface a prompt. Every other tool still follows the normal mode rules.
+
+<Callout type="note" title="Plan mode does not mute read tools">
+`Read`, `Glob`, `Grep`, and `LSP` run silently in plan mode just as they do everywhere else. The restriction is specifically on writes, not on observation. Claude can — and does — read extensively while building a plan.
+</Callout>
+
+Claude Code ships a built-in `Plan` subagent that plan mode uses when you invoke `/plan` explicitly. That subagent skips CLAUDE.md files and git status to keep research fast, running on the parent model. The `ExitPlanMode` tool surfaces the finished plan for your approval before file changes are allowed.
+
+**Switching plan mode:** press `Shift+Tab` in the CLI to cycle `normal → acceptEdits → plan → normal`. The `/plan` slash command toggles it directly. There is no settings key to persist plan mode across sessions — it is intentionally session-scoped.
+
+### When to use plan mode
+
+| Situation | Why plan mode helps |
+|---|---|
+| Exploring an unfamiliar codebase | Claude reads broadly; you see the findings before any edits land |
+| Architectural decision first | Forces a plan review before implementation begins |
+| Shared / prod filesystem | Hard guarantee that nothing touches disk during the recon phase |
+| Teaching or code review | You want Claude's analysis without its changes |
+
+Plan mode pairs well with a high effort level. Set `/effort xhigh` before entering plan mode on a complex refactor and Claude will reason more carefully about its proposed approach before it ever asks to write a file.
+
+## acceptEdits — the right default for coding sessions
+
+`acceptEdits` auto-approves:
+
+- `Edit`, `Write`, `NotebookEdit` — all file mutations
+- Common filesystem shell commands: `mkdir`, `touch`, `mv`, `cp`
+
+Everything else — `Bash` with arbitrary commands, `WebFetch`, `WebSearch` — still follows default rules and prompts.
+
+This is the mode most engineers settle into for active coding sessions. You still see a prompt for shell commands (which is where accidental `rm -rf` territory lives), but you avoid clicking through every incremental file save.
+
+<Callout type="tip" title="acceptEdits is not the same as dontAsk">
+In `acceptEdits`, Claude can be stopped at any `Bash` command it decides to run. In `dontAsk`, even shell commands pass silently — or fail silently if they lack an allow rule. Choose `acceptEdits` when a human is watching; choose `dontAsk` only in fully automated pipelines with an explicit allowlist.
+</Callout>
+
+### Interaction with allow rules in acceptEdits
+
+Allow rules layer on top of mode. If you have `Bash(npm run *)` in `permissions.allow`, those npm commands run without a prompt even in `default` mode — `acceptEdits` adds nothing for them. Where `acceptEdits` adds value is the long tail of file operations Claude generates that you have not pre-defined rules for.
+
+## dontAsk — CI and headless pipelines
+
+`dontAsk` is the mode for automation. It never shows a prompt. The decision rule is binary: if there is a matching allow rule, the tool runs; if not, the call is denied silently.
+
+**The consequence:** every tool call your pipeline needs must be in `permissions.allow` before you activate `dontAsk`. Anything not listed fails — not with an error Claude can retry, but with a silent deny that blocks progress without explanation.
+
+### Wiring a dontAsk CI run
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm ci)",
+      "Bash(npm run build)",
+      "Bash(npm run lint)",
+      "Bash(npm test)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Read(**)",
+      "Edit(/src/**)",
+      "Edit(/tests/**)",
+      "Write(/src/**)",
+      "Write(/tests/**)"
+    ]
+  }
+}
+```
+
+Then invoke Claude with the mode set:
+
+```bash
+claude --permission-mode dontAsk --allowedTools "Bash,Read,Edit,Write" \
+  "Fix all TypeScript errors and make the test suite pass"
+```
+
+Or via the Agent SDK:
+
+```typescript
+for await (const msg of query({
+  prompt: "Fix all TypeScript errors and make the test suite pass",
+  permissionMode: "dontAsk",
+  allowedTools: ["Bash", "Read", "Edit", "Write"],
+  settingSources: ["project"],   // picks up .claude/settings.json allowlist
+})) {
+  // handle messages
+}
+```
+
+`settingSources: ["project"]` is important: without it the SDK runs with no project context and the allow rules in `.claude/settings.json` are not loaded.
+
+### maxTurns and maxBudgetUsd as safety bounds
+
+In `dontAsk` + headless contexts there is no human to stop a runaway loop. Set both:
+
+```typescript
+for await (const msg of query({
+  prompt: "...",
+  permissionMode: "dontAsk",
+  maxTurns: 30,
+  maxBudgetUsd: 2.00,
+  // ...
+})) { ... }
+```
+
+`maxTurns` counts tool-use round trips, not the final text-only response turn. When either limit fires, the SDK emits a `ResultMessage` with an `error_max_turns` or `error_max_budget_usd` subtype — both are catchable and distinguishable from a successful run.
+
+## bypassPermissions — last resort for truly isolated environments
+
+`bypassPermissions` skips every check in the stack shown earlier. No rules are evaluated, no hooks can block. It is activated with the CLI flag `--dangerously-skip-permissions`.
+
+Two hard limits remain even in this mode:
+- Cannot run as root on Unix.
+- It is the caller's responsibility to ensure the environment provides actual isolation.
+
+<Callout type="danger" title="bypassPermissions on a dev laptop is not a speed shortcut">
+The flag exists for containers where the OS itself is the boundary — a Docker image with only your repo mounted, a fresh VM with no credentials on it. Using it on a developer workstation removes every guardrail simultaneously. A misread instruction can delete files, commit secrets, or run arbitrary shell code with no intervention point.
+</Callout>
+
+The canonical pattern is to run `bypassPermissions` inside an ephemeral container job — one that mounts only the working directory and has no access to production credentials, SSH keys, or cloud IAM roles.
+
+## The Bash sandbox — OS-level confinement
+
+Permission rules work at the text level: deny `Bash(rm -rf *)` blocks that exact pattern. But Claude can write a Python script that calls `shutil.rmtree` — and a deny rule on `Bash` does not stop what Python does internally.
+
+The Bash sandbox is a different layer. It applies OS-level enforcement to every process spawned by the `Bash` tool, including child processes, interpreted scripts, and anything those scripts execute. It cannot be sidestepped by writing an intermediary.
+
+Key properties sourced from the tools reference:
+
+- Sandbox network rules are **independent** of `WebFetch` allow rules. A domain allowed in `WebFetch` does not automatically get network access inside the sandbox — you configure network permissions separately.
+- The sandbox is **not available on Windows** (where the `PowerShell` tool preview is used instead).
+- Unlike `deny` rules, sandbox restrictions apply to **indirect file access** — e.g., a Python script that opens a file Claude did not name directly.
+
+<Callout type="note" title="Deny rules vs. the sandbox">
+Think of deny rules as "what Claude is allowed to ask the shell to do" and the sandbox as "what the shell is actually capable of doing." They are complementary. For maximum confinement you want both: deny rules block the obvious paths, the sandbox blocks the indirect ones.
+</Callout>
+
+## The PermissionRequest hook — programmable approval
+
+Rather than showing a dialog to the user, `PermissionRequest` lets a hook script decide. This is the mechanism for custom approval UIs, policy engines, or headless pipelines that need selective gating without going full `dontAsk`.
+
+```json
+{
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/policy-check.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The hook receives the tool name and input via stdin as JSON. Its exit code and JSON stdout determine the outcome:
+
+| Exit code | stdout `permissionDecision` | Result |
+|---|---|---|
+| 0 | `"allow"` | Tool runs, no prompt |
+| 0 | `"deny"` | Tool blocked |
+| 0 | `"ask"` | Falls through to normal dialog |
+| 0 | `"defer"` | Next hook in chain decides |
+| 2 | *(any)* | Tool blocked, stderr shown as error |
+
+When multiple `PermissionRequest` hooks are attached to the same event, precedence is: **deny > defer > ask > allow**. A single deny hook beats all the allows.
+
+### Precedence in practice
+
+This lets you build a layered policy:
+
+```json
+{
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "matcher": "Bash(git push *)",
+        "hooks": [{ "type": "command", "command": "/bin/block-push.sh" }]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": "/bin/audit-log.sh" }]
+      }
+    ]
+  }
+}
+```
+
+`block-push.sh` denies all git pushes. `audit-log.sh` logs everything else to a file and returns `ask` so humans still see a prompt. The two hooks compose without knowing about each other.
+
+## Managed settings — locking the control surface itself
+
+For teams and enterprises, managed settings sit above everything else in the hierarchy:
+
+```
+Managed (highest) > CLI args > Local > Project > User (lowest)
+```
+
+Managed settings cannot be overridden. The ones most relevant to permission control:
+
+| Key | Effect |
+|---|---|
+| `allowManagedPermissionRulesOnly: true` | Prevents user and project settings from adding any permission rules |
+| `disableAutoMode: "disable"` | Removes the `auto` mode option |
+| `allowManagedHooksOnly: true` | Only hooks defined in managed settings can run |
+| `allowedHttpHookUrls` | Allowlist of URL patterns for HTTP-based hooks |
+
+The `policyHelper` key (v2.1.136+) goes further: it points to an executable that generates dynamic managed settings at session start — a policy server that can produce different rules per-user, per-repo, or per-time-of-day without re-deploying static config.
+
+## Choosing a mode: the decision matrix
+
+| Context | Recommended mode | Why |
+|---|---|---|
+| Exploring unfamiliar code | `plan` | No writes; full read access |
+| Active coding, human watching | `acceptEdits` | Edits flow; shell still prompts |
+| Trusted task, human available | `default` | Full control; prompted on everything risky |
+| CI/CD pipeline | `dontAsk` + explicit allowlist | No hangs; predictable |
+| Isolated container | `bypassPermissions` | OS provides the boundary |
+| Custom policy engine | `default` + `PermissionRequest` hook | Programmable per-call decisions |
+
+## Recap
+
+Permission modes are the fallback policy, not the whole system. Deny rules and blocking hooks fire before the mode matters. Plan mode's guarantee is scoped precisely to file writes — reads are always allowed. `acceptEdits` fills the coding-session sweet spot between `plan` and full headless automation. `dontAsk` requires a complete allowlist up front and pairs with `maxTurns`/`maxBudgetUsd` bounds in any long-running job. The Bash sandbox adds OS-level confinement that text-based deny rules cannot provide. The `PermissionRequest` hook makes the entire approval decision programmable.
+
+**Next:** the [Hooks — intercepting the agent loop](/c/hooks-deep-dive) chapter covers the full 30-event hook surface and the patterns for auditing, blocking, and injecting context at every stage of Claude's execution.

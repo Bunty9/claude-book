@@ -1,0 +1,161 @@
+# Slash commands & built-ins
+
+Claude Code ships with a set of slash commands that let you control the session, manage context, and trigger complex workflows — all without leaving the conversation. By the end of this chapter you will know which built-in commands exist and what each one does, how to create your own reusable shortcuts with a simple Markdown file, and how bundled skills extend the command palette with ready-made workflows.
+
+## What a slash command is
+
+A slash command is a `/name` shortcut you type at the Claude Code prompt. Some commands configure the session (switch model, set effort level). Some manage context (compact history, rewind file edits). Some launch multi-step workflows (deep research, code review). Under the hood each command is either a built-in that ships with the binary or a Markdown file on disk that Claude reads and executes when you invoke it.
+
+Typing `/help` at any time shows the full list available in your current session — built-ins, bundled skills, your custom commands, and any prompts exposed by connected MCP servers.
+
+## Built-in commands
+
+The table below covers the most commonly used built-ins. This is not exhaustive — `/help` is always the source of truth — but it represents the commands you will reach for daily.
+
+| Command | What it does |
+|---|---|
+| `/help` | Show all available commands for the current session |
+| `/clear` | Reset conversation to an empty context (drops all history) |
+| `/compact` | Summarise older history in place to free context space |
+| `/context` | Show a token-by-token breakdown of what is using context |
+| `/usage` | Show token and cost usage for the current session |
+| `/plan` | Toggle plan mode (read-only exploration; files never changed without a prompt) |
+| `/model` | Switch the active model without restarting |
+| `/config` | Open the settings UI (output style, effort, MCP servers, …) |
+| `/permissions` | Review and edit allow/deny rules interactively |
+| `/effort <level>` | Set reasoning depth for the session: `low`, `medium`, `high`, `xhigh`, `max` |
+| `/memory` | View and edit persisted auto-memory facts |
+| `/mcp` | Show connected MCP servers and their tools |
+| `/agents` | Manage subagents (running tab + library tab) |
+| `/tasks` | View the session task list |
+| `/workflows` | View running and completed dynamic workflow runs |
+| `/add-dir <path>` | Add a directory to the session's working scope |
+| `/cd <path>` | Switch working directory while preserving prompt cache |
+| `/rewind` | Restore files to their pre-edit state using file checkpoints |
+| `/doctor` | Diagnose common configuration and environment problems |
+| `/loop [interval]` | Run a prompt or skill on a recurring interval |
+| `/goal <condition>` | Register a completion condition; Claude keeps working until it is met |
+
+<Callout type="tip" title="/compact is your best friend in long sessions">
+Claude's context window is append-only — every file read, tool output, and response accumulates. When a long session starts to feel sluggish or you notice Claude losing track of earlier details, `/compact` summarises the older history in place and hands back significant headroom. The summary is injected as a `compact_boundary` system message so the timeline is preserved.
+</Callout>
+
+### Effort levels and `/effort`
+
+Effort controls how much reasoning Claude applies per turn. Higher effort means more thinking tokens, higher cost, and noticeably better results on complex tasks. The levels are:
+
+- `low` — fast and cheap; good for simple lookups and edits
+- `medium` — the default; balanced for everyday work
+- `high` — for tricky refactors, architectural decisions, or nuanced debugging
+- `xhigh` — recommended for Claude Sonnet 4.7 and Opus 4.7 on hard problems
+- `max` — targets multi-step deep analysis; the ceiling for reasoning depth
+- `ultracode` — shorthand for `xhigh` effort plus automatic workflow orchestration for every substantial task
+
+Set it for a session with `/effort xhigh`, or persist it in `settings.json` via `effortLevel: "xhigh"`.
+
+### `/rewind` and file checkpoints
+
+Every time Claude edits a file, Claude Code snapshots the previous version. `/rewind` lets you pick a checkpoint and restore the file to that state — no git required. Checkpointing is on by default (controlled by `fileCheckpointingEnabled` in settings). This is the fastest recovery path when Claude takes a wrong turn on a refactor.
+
+## Bundled skills
+
+Beyond the built-in commands, Claude Code ships with a set of **bundled skills** — pre-installed slash commands that each encapsulate a complete workflow. They appear in `/help` alongside built-ins.
+
+| Skill | What it does |
+|---|---|
+| `/code-review` | Review the current diff for bugs, simplification opportunities, and efficiency wins |
+| `/debug` | Systematic diagnosis loop: reproduce, isolate, hypothesise, verify |
+| `/run` | Infer how to launch this project and start it (reads README, package.json, Makefile) |
+| `/verify` | Launch the app and observe its behaviour to confirm a change works |
+| `/batch` | Run a prompt against many targets in parallel |
+| `/deep-research` | Fan out web searches, cross-check sources, synthesise a cited report |
+| `/loop` | Repeat a prompt or skill on an interval |
+
+The key difference from built-ins: skills load lazily. Their instructions only reach Claude's context when you invoke them, so they cost no tokens when you are not using them. A project skill with the same name as a bundled skill takes precedence — you can override any bundled behaviour at the project level.
+
+## Writing your own slash commands
+
+This is where the system becomes genuinely powerful. Any Markdown file you drop in the right directory becomes a slash command with no additional wiring.
+
+### Where to put the file
+
+| Location | Scope | Who sees it |
+|---|---|---|
+| `~/.claude/commands/<name>.md` | Personal | Only you, in every project |
+| `.claude/commands/<name>.md` | Project | Everyone on the team |
+| `~/.claude/skills/<name>/SKILL.md` | Personal (preferred format) | Only you, in every project |
+| `.claude/skills/<name>/SKILL.md` | Project (preferred format) | Everyone on the team |
+
+Both the `commands/<name>.md` and `skills/<name>/SKILL.md` layouts work identically as slash commands. The skills format is preferred because it supports a richer frontmatter and slots into the same system as bundled skills.
+
+### A minimal custom command
+
+Create `.claude/commands/standup.md`:
+
+```markdown
+---
+description: Draft today's standup update from recent git activity
+argument-hint: "[optional focus area]"
+allowed-tools: Bash, Read
+---
+
+Look at `git log --oneline -20` and any unstaged changes.
+Draft a standup message (yesterday/today/blockers) for a developer working on $ARGUMENTS.
+Keep it under five bullet points total. Plain text, no markdown.
+```
+
+Now `/standup backend auth` is a real command in your session.
+
+### Frontmatter fields
+
+| Field | What it does |
+|---|---|
+| `description` | One-line summary shown in `/help`; also the phrase Claude matches when deciding to auto-invoke the skill |
+| `allowed-tools` | Comma-separated list of tools this command may use (e.g., `Bash, Read, Grep`) |
+| `argument-hint` | Hint shown next to the command name in autocomplete |
+| `model` | Override the active model for this command only |
+| `disable-model-invocation` | Set `true` to make the skill manual-only (Claude will not auto-trigger it) |
+| `context` | Set `fork` to run the command in a background subagent |
+
+### Dynamic context injection
+
+Any line in the skill body that starts with a backtick-wrapped `!` command is executed at load time and replaced with its output before Claude sees the content:
+
+```markdown
+---
+description: Review uncommitted changes
+allowed-tools: Bash, Read
+---
+
+Here is the current diff:
+
+!`git diff HEAD`
+
+Review the above for obvious bugs and style inconsistencies. Be concise.
+```
+
+When you invoke this command, Claude receives the actual diff inline — it does not need to run a separate tool call to fetch it. This keeps the skill fast and keeps the tool call count down.
+
+<Callout type="note" title="Skills hot-reload without restarting">
+Claude Code watches your skill directories for changes. Adding, editing, or deleting a skill takes effect immediately in the running session. The one exception: creating a brand-new skill directory for the first time requires a restart to register the directory watcher.
+</Callout>
+
+### Organising commands in a team repo
+
+For a project with more than a handful of commands, subdirectory organisation keeps things tidy. A file at `.claude/skills/db/migrate/SKILL.md` becomes the slash command `/db:migrate`. The directory prefix acts as a namespace, avoiding name collisions across areas of the codebase.
+
+## How slash commands reach the SDK
+
+If you are embedding Claude Code in an application via the Agent SDK, slash commands are dispatched the same way a user would type them — by including the `/name ...` string in the prompt. The `system/init` message that arrives at the start of every SDK session carries a `slash_commands` field listing every command available in the current configuration, which lets your application dynamically surface the right options.
+
+<Callout type="warning" title="Interactive-only commands do not work in SDK non-interactive mode">
+A handful of built-in commands (like `/config`, which opens a TUI panel) require an interactive terminal. They are not useful from code. Stick to commands whose output is plain text or that perform well-defined actions; check the `system/init` list to confirm a command is present before relying on it programmatically.
+</Callout>
+
+## Recap
+
+Slash commands are the control surface for a Claude Code session. Built-in commands handle context, modes, and session management. Bundled skills wrap complete workflows — code review, debugging, research — into single invocations. Custom commands let you encode your team's workflows as Markdown files that anyone on the project can invoke instantly.
+
+The rule of thumb: if you find yourself giving Claude the same multi-step briefing more than twice, it belongs in a skill file. Write it once, invoke it forever.
+
+**Next up:** the chapter on hooks shows you how to run your own code *around* Claude's tool calls — before they execute, after they finish, and at every other lifecycle event in a session.

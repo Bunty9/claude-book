@@ -1,0 +1,156 @@
+# Worktrees for isolation
+
+Git worktrees give every feature its own physical directory, its own branch, and its own session memory. By the end of this chapter you will understand why this matters for parallel AI-driven development, how to structure the discipline so it stays automatic rather than ceremonial, and what the concrete failure mode looks like when the discipline breaks down.
+
+## The problem worktrees solve
+
+When you work on a single checkout, all in-progress changes share the same index. A failing test from feature A is visible to an agent working on feature B. Stashing helps, but stashes are easy to forget, hard to name, and invisible to a new session that opens in the same directory.
+
+The deeper problem with a shared checkout is **session contamination**. Claude Code stores session history under a directory derived from the working directory. When you open a session in the main checkout to work on feature B, you are opening it in the same project entry that holds feature A's history, notes, and context. The agent is not confused about which task it is on — but it does have access to the wrong context, and any memory or file-state assumptions from the previous session can leak.
+
+Git worktrees solve both problems at the same level: the filesystem. Each worktree is a separate directory with its own working tree and its own `HEAD`. Claude Code treats each worktree path as a distinct project. Session history, memory files, and tool calls are scoped to the worktree, not to the repository root. Parallel features become parallel directories, and isolation is structural rather than procedural.
+
+<Callout type="note" title="Worktrees are a git primitive, not a Claude-specific concept">
+`git worktree add` has been available since Git 2.5. What Claude Code adds is that each worktree gets its own `~/.claude/projects/` entry, so session memory is isolated per worktree automatically. No configuration required.
+</Callout>
+
+## The feature-per-worktree workflow
+
+The workflow below is not an ideal to aspire to — it is drawn from actual usage across two active repositories with 37 concurrent worktrees. (Source: packet-E, F-10) Step through it to see each phase, the command it involves, and the pitfall to avoid.
+
+<WorktreeWorkflowAnimator />
+
+The seven steps above collapse into a simple rule: **the main checkout is a reference point, not a workspace.** You never edit files there. You never check out a branch there. You create a worktree, work in it, commit, open a PR, and remove the worktree after merge. The cycle repeats.
+
+## The stale-base incident
+
+The single most expensive failure mode in this workflow is creating a worktree from the wrong base. This is not hypothetical. From a concrete incident documented during active development (Source: packet-E, F-12):
+
+> An estimate-PDF redesign was built on top of a checked-out `feat/time-converter-v1.6` HEAD because its files "differed from dev" — it appeared to be newer. It was 314 commits stale. The work clobbered shipped dev estimate features and duplicated an already-shipped filename-rename. The entire effort had to be re-implemented from scratch on the correct base.
+
+The incident produced two structural fixes. First, the `lux-wt.sh` script was written to encapsulate worktree creation — it always fetches `origin/dev` and bases new worktrees on that commit, never on the current checkout HEAD. Second, a `SessionStart` hook was added to audit drift at session open time: (Source: packet-E, F-11)
+
+```bash
+# .claude/settings.json — SessionStart hook
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/lux-wt.sh\" brief 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The `brief` subcommand runs silently when everything is healthy. If the main checkout has drifted onto a branch, gone dirty, or is no longer at `origin/dev`, it prints a warning before any work begins.
+
+<Callout type="warning" title="Never hand-roll git worktree add">
+Running `git worktree add` directly bypasses the base-on-origin/dev guarantee. If your working directory happens to have a branch checked out that is dozens of commits behind the integration branch, you will create a worktree from that stale point without any warning. Wrap worktree creation in a script that always bases on `origin/dev` (or your equivalent integration branch) explicitly.
+</Callout>
+
+## Session memory is per worktree — by design
+
+When you open Claude Code in `cdp-backend-worktrees/feat/my-feature`, the session is stored under a `~/.claude/projects/` path derived from that absolute directory. When you open Claude Code in `cdp-backend-worktrees/feat/other-feature`, it gets a separate entry. The two sessions never see each other's history.
+
+This has a practical implication: when you resume work on a feature after a break, the session history from your last session on that feature is exactly where you left it. You can start with "continue from where you left off" and Claude picks up from the right context, not from whatever the last session in the main checkout was doing. (Source: packet-E, F-21)
+
+It also means that removing a worktree after merge does not lose session context. If your workflow includes an automated memory extraction step — a hook that summarizes the session into durable facts before the worktree is cleaned up — the facts survive even though the session file does not.
+
+## Structural isolation for parallel agents
+
+The isolation guarantee is what makes parallel agent dispatch safe. When you run three agents simultaneously on disjoint file scopes, each in its own worktree, the failure modes narrow dramatically. (Source: packet-E, F-15)
+
+The constraint is file-level disjointness: two agents editing the same file concurrently inside the same worktree produce conflicts. Two agents each in their own worktree, each editing entirely different files, produce no conflicts at all. The worktree boundary is what gives you this guarantee.
+
+<Mermaid chart={`
+flowchart TD
+    DEV["origin/dev\n(integration branch)"]
+
+    WT1["worktree: feat/auth-session\nfiles: src/auth/**\nclaude session A"]
+    WT2["worktree: feat/analytics-tab\nfiles: src/analytics/**\nclaude session B"]
+    WT3["worktree: feat/pdf-rename\nfiles: src/pdf/**\nclaude session C"]
+
+    PR1["PR → dev"]
+    PR2["PR → dev"]
+    PR3["PR → dev"]
+
+    DEV --> WT1
+    DEV --> WT2
+    DEV --> WT3
+
+    WT1 --> PR1
+    WT2 --> PR2
+    WT3 --> PR3
+
+    PR1 --> DEV
+    PR2 --> DEV
+    PR3 --> DEV
+
+    style DEV fill:var(--color-accent-subtle),stroke:var(--color-accent)
+    style WT1 fill:var(--color-tip-subtle),stroke:var(--color-tip)
+    style WT2 fill:var(--color-tip-subtle),stroke:var(--color-tip)
+    style WT3 fill:var(--color-tip-subtle),stroke:var(--color-tip)
+`} />
+
+Each worktree branches from the same `origin/dev` base. Each runs independently. Each merges back through a PR. The main checkout is not involved at any point.
+
+## Minimum viable setup
+
+You do not need a custom script to get started. The discipline has two mandatory rules and one strong recommendation:
+
+**Rule 1 — Never edit files in the main checkout.** Keep it clean. Keep it detached at your integration branch. Use it only as a reference.
+
+**Rule 2 — Always base new worktrees on the fetched integration branch.** Not on the local HEAD. Fetch first, then base.
+
+```bash
+# Fetch the integration branch before creating a worktree
+git fetch origin dev
+
+# Create a worktree based on the fetched ref
+git worktree add ../feature-my-thing -b feat/my-thing origin/dev
+```
+
+**Strong recommendation — wrap this in a script.** The two rules above are easy to state and easy to violate under time pressure. A ten-line script that does the fetch and the worktree creation eliminates the violation surface entirely. When the script is the only path people use, the rules become structural rather than remembered.
+
+## Matching worktrees to agent scope
+
+Not every worktree needs its own agent session. A single agent can do substantial sequential work inside one worktree. The decision to dispatch parallel agents is separate from the decision to use worktrees.
+
+What worktrees give parallel agents is a conflict-free working surface. When you dispatch three agents in parallel, the correct question is: do their file scopes overlap? If yes, serialize them or combine them into one agent. If no, each can work in its own worktree simultaneously with no coordination overhead beyond the final merge. (Source: packet-E, F-18)
+
+A practical heuristic: scope each worktree to one module, one route group, or one coherent subsystem. Scopes that share a utility file or a shared type should be in the same worktree, not separate ones.
+
+<Callout type="tip" title="Per-worktree setup commands save time across the session">
+When a worktree is created by a script, the script can also run environment setup — `npm ci`, `prisma generate`, copy a `.env` file — so the first session inside the worktree can run the dev server immediately without a setup phase. This is especially valuable when the agent's first action would otherwise be to install dependencies.
+</Callout>
+
+## Cleanup and the cycle
+
+After a PR merges, the worktree should be removed. Leaving stale worktrees accumulates confusion: old branches, session histories from completed work, and outdated `node_modules` that diverge from the current lockfile.
+
+```bash
+# List all worktrees to see what is active
+git worktree list
+
+# Remove a worktree after its branch is merged
+git worktree remove ../feature-my-thing
+
+# Prune references to worktrees that are already gone from disk
+git worktree prune
+```
+
+If you use a wrapper script for creation, add a paired `clean` subcommand that prunes merged worktrees. One command to create, one command to remove — the cycle stays mechanical.
+
+## Recap
+
+Worktrees give AI-driven development the isolation that the filesystem does not provide by default. Each feature gets a directory, a branch, and a session. The main checkout stays clean and pinned to the integration branch. Parallel agents work on disjoint file scopes in separate worktrees with no coordination overhead. The failure mode — creating a worktree from a stale base — is eliminated structurally by wrapping creation in a script that always fetches before branching.
+
+The discipline costs almost nothing once the script exists. The alternative is sharing state across features, contaminating session memory, and occasionally discovering that weeks of work were built on the wrong foundation.
+
+The next chapter covers parallel agent orchestration — how to dispatch multiple agents across worktrees simultaneously, assign file scopes to prevent conflicts, and collect results without merge collisions.

@@ -1,0 +1,103 @@
+# What is Claude — the model family
+
+Claude is Anthropic's family of AI assistants. In this chapter you will learn how the model tiers relate to each other, what kinds of input Claude can handle, and — just as importantly — where its limits are. By the end you will have an honest mental model of what you are working with before you write a single prompt.
+
+## One name, many models
+
+"Claude" is not a single model — it is a product family that Anthropic releases in multiple capability tiers. Each release generation is given a number (Claude 3, Claude 4, …) and each generation ships several variants tuned for different cost / performance trade-offs.
+
+The naming follows a consistent pattern across generations:
+
+| Tier | Character | When to reach for it |
+|---|---|---|
+| **Opus** | Most capable, highest cost | Hard reasoning, long complex tasks, when quality matters more than speed or cost |
+| **Sonnet** | Balanced — the everyday workhorse | The default for most tasks; strong reasoning at a reasonable price |
+| **Haiku** | Fastest, lowest cost | High-volume pipelines, quick lookups, mechanical verification, anything that runs hundreds of times |
+
+<Callout type="note" title="Fable: a fourth tier">
+As of June 2026, Anthropic released **Claude Fable 5** ("Mythos-class") to general availability — a specialised model positioned above Sonnet and below Opus for certain agentic and creative workloads. The tier naming is not always perfectly linear across every use case; check the current model catalogue before assuming a strict hierarchy.
+
+Source: Claude Code changelog v2.1.170, code.claude.com/docs/en/changelog, verified 2026-06-21.
+</Callout>
+
+The right tier for your task is almost never obvious from the name alone. Later chapters (particularly the one on cost-tiering in multi-agent orchestration) will give you concrete decision rules. For now, Sonnet is a safe starting point for anything interactive; Haiku is worth knowing for tasks that run many times per minute.
+
+## What goes in: Claude's modalities
+
+Claude accepts several types of input within a single conversation turn.
+
+**Text** is the baseline. Prompts, documents, code, structured data — if it can be expressed as a string, Claude can reason over it.
+
+**Images** are natively understood. You can paste a screenshot, a diagram, a photo of a whiteboard, or a UI mockup and ask Claude to read, describe, or reason about it. This is not OCR bolted on — the model processes the image holistically as part of its context. Rough rule of thumb: one image counts for several hundred to a few thousand tokens depending on its resolution, so large image-heavy conversations fill the context window faster than text-only ones.
+
+**Documents** (PDFs and similar) can be provided via Claude.ai's file upload, the API, or tool calls that read files. The model treats the document content as text in its context window.
+
+**Tool results** are a special form of input: when Claude calls a tool (a web search, a file read, a bash command) the tool's output is fed back into the context and Claude reasons over it as if you had typed the result yourself.
+
+What Claude does **not** currently produce natively: audio, video, or images as output. It generates text — but that text can be code that draws images, markdown that renders rich documents, or JSON that drives other systems.
+
+<Callout type="tip" title="Modalities in practice">
+The combination of text + images + tools is more powerful than any one modality alone. A common pattern: paste a screenshot of a bug or layout issue → Claude reads the visual context → Claude runs a bash command to check the relevant code → Claude suggests the fix. Each medium fills a gap the others leave.
+</Callout>
+
+## The context window is the whole conversation
+
+Every piece of text, every image, every tool result — all of it lives in the **context window**, which is Claude's working memory for that session. Modern Claude models support very large context windows (hundreds of thousands of tokens), but the window is still finite. When it fills, older content is either dropped or compacted.
+
+Paste the text of a long document below to see how many tokens it consumes:
+
+<Tokenizer/>
+
+This matters when you are working with Claude Code on a large codebase or in a long autonomous session. Chapter 3 (Context Engineering) covers the tools for managing this deliberately. For now: if something must stay in scope, keep it in the context.
+
+## What Claude is genuinely good at
+
+Understanding where Claude excels — not as marketing, but as a practical operating guide — helps you deploy it well.
+
+**Reasoning over text you provide.** Claude is excellent at synthesising, summarising, critiquing, comparing, and re-expressing information that you give it. This is the highest-confidence use: you supply the facts, Claude supplies the reasoning.
+
+**Writing and editing.** First drafts, copy edits, tone adjustments, translation of technical concepts into plain language, structure review. Claude handles all of these at a level that accelerates most writing workflows significantly.
+
+**Code.** Generating, explaining, refactoring, debugging, and reviewing code across most mainstream languages. Claude Code in particular is built on top of this capability — the agentic harness gives it tools to read files, run tests, and iterate autonomously.
+
+**Structured extraction.** Given a messy document, Claude can reliably extract structured data — names, dates, entities, relationships — into JSON, tables, or other formats. This is a high-value automation target because it scales to large document sets.
+
+**Planning and breaking down problems.** Given a complex goal, Claude is good at producing a step-by-step plan, identifying sub-problems, and flagging dependencies. It works well as a reasoning partner before implementation begins.
+
+## Where Claude has real limits
+
+Being honest about limits is more useful than listing capabilities.
+
+**Claude does not know what happened after its training cutoff.** Its knowledge has a hard date. News events, new package versions, recent API changes, updated documentation — anything that postdates training is invisible to Claude unless you provide it in context. This is why tool calls that fetch live data (web search, file reads, API calls) matter so much in production workflows.
+
+**Claude can hallucinate.** As the previous chapter explained, Claude predicts plausible text. For well-covered domains, plausible and correct almost always align. For niche facts, recent events, specific citations, or obscure details, plausible and correct can diverge — and Claude will not always signal the uncertainty. Verify anything high-stakes against a primary source.
+
+**Claude cannot take actions outside its tools.** Claude itself cannot access the internet, write to your disk, or call an API unless it has a tool that does so, and you have allowed that tool. This is a feature, not a limitation — it is the basis of safe, auditable automation — but it is important to understand that Claude-in-the-chat-window and Claude-with-tools are meaningfully different operating modes.
+
+**Long-context degradation.** Very long conversations, or contexts packed with many documents, can cause Claude to lose track of details mentioned early on. This is a known characteristic of attention-based models: not everything in the context window gets equal weight. The practical response is to keep context lean and put the most important instructions near the top and near the end.
+
+<Callout type="warning" title="The confident wrong answer">
+Claude's tone does not reliably signal its confidence. It may state something incorrect in the same assured register it uses for things it knows well. This is not deceptive — it is a consequence of how next-token prediction works. Treat Claude's output as a smart first draft by a knowledgeable collaborator who occasionally mis-remembers facts, not as a reference that has been verified.
+</Callout>
+
+## How the tiers fit into a real workflow
+
+Most teams end up using all three tiers in combination, even within a single feature:
+
+<Mermaid chart={`
+graph LR
+  A["Hard reasoning<br/>Architecture, spec, review<br/><b>Opus / Sonnet</b>"] --> B["Everyday implementation<br/>Code, write, refactor<br/><b>Sonnet</b>"]
+  B --> C["High-volume mechanical<br/>Verify, extract, format<br/><b>Haiku</b>"]
+  C -->|"Results feed back"| B
+`} />
+
+The engineering track chapter on cost-tiering (Part 5) covers when to dispatch which tier in an automated pipeline. For now, the takeaway is: **Sonnet for judgment, Haiku for scale, Opus when quality is the ceiling constraint**.
+
+## Recap
+
+- Claude is a family of models, not a single thing. Haiku, Sonnet, and Opus (plus Fable in the current generation) serve different cost/performance points.
+- It understands text, images, documents, and tool results as input. It produces text (including code and structured data) as output.
+- Its genuine strengths are reasoning over context you supply, writing, code, structured extraction, and planning.
+- Its genuine limits are knowledge cutoff, hallucination risk on specific facts, scope bounded by its tools, and attention degradation over very long contexts.
+
+**Next:** [What is Claude Code — agentic harness vs a chat box](/c/what-is-claude-code) walks through what changes when Claude gets tools and an agent loop, which is where the power (and the complexity) really starts.

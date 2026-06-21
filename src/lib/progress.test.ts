@@ -18,13 +18,16 @@ describe('progress', () => {
     expect(doneIds()).toContain('what-is-an-llm')
   })
   it('completion math for beginner track', () => {
-    expect(completion('beginner')).toEqual({ done: 0, total: 1, pct: 0 })
+    // beginner track now has 15 chapters (positions 1-15)
+    expect(completion('beginner')).toEqual({ done: 0, total: 15, pct: 0 })
     markDone('what-is-an-llm')
-    expect(completion('beginner')).toEqual({ done: 1, total: 1, pct: 100 })
+    expect(completion('beginner')).toEqual({ done: 1, total: 15, pct: 7 })
   })
-  it('resumeChapter returns first undone then undefined', () => {
+  it('resumeChapter returns first undone then next undone', () => {
+    // first undone is position 1 in beginner: what-is-an-llm
     expect(resumeChapter('beginner')).toBe('what-is-an-llm')
     markDone('what-is-an-llm')
-    expect(resumeChapter('beginner')).toBeUndefined()
+    // after marking position 1 done, resume should point to position 2: how-to-use-this-book
+    expect(resumeChapter('beginner')).toBe('how-to-use-this-book')
   })
 })

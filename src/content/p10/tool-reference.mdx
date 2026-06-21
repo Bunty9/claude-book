@@ -1,0 +1,163 @@
+# Tool reference
+
+Claude Code ships with a catalog of built-in tools that cover every surface it can reach — files, shell, web, agents, notebooks, scheduling, and more. This chapter gives you the full picture: what each tool does, when to reach for it, and the gotchas that bite people most often. Use the interactive catalog below to filter and search while you read.
+
+## The catalog at a glance
+
+Every capability Claude exercises in your session is a named tool call. Reading a file is `Read`. Running `npm test` is `Bash`. Creating a background subagent is `Agent`. Understanding the tool names — and which ones require your approval — is the fastest way to understand what Claude can and cannot do on its own.
+
+<ToolSurfaceMap/>
+
+<Callout type="note" title="Two classes of tools: silent and prompt">
+Tools that can only observe your environment — `Read`, `Glob`, `Grep`, `LSP` — run without any approval prompt. Tools that can change state — `Bash`, `Edit`, `Write`, `WebFetch`, `WebSearch` — prompt before running unless you have an allow rule in place. The "perm" and "silent" badges in the catalog above reflect this distinction.
+</Callout>
+
+## Surface-by-surface breakdown
+
+The catalog organises tools into surfaces. Here is what each surface covers and the most important things to know about each group.
+
+### Filesystem
+
+The four filesystem tools form a natural read/write split:
+
+- **`Read`** — reads file contents with line numbers. Also handles images, PDFs, and Jupyter notebooks (it renders the content, not raw bytes). No permission prompt.
+- **`Glob`** — finds files by pattern (`src/**/*.ts`, `**/*.test.*`). Results are sorted by modification time and capped at 100. Does *not* respect `.gitignore` by default.
+- **`Edit`** — makes exact string replacements in a file. Requires the file to have been `Read` in the current conversation first, and `old_string` must appear exactly once (use `replace_all: true` for bulk replacements). Prompts for approval.
+- **`Write`** — creates or overwrites a file. If the file already exists, it must have been `Read` first. Prompts for approval.
+
+`Grep` (search surface) respects `.gitignore` by default; `Glob` does not. When you want to search *within* files, prefer `Grep`. When you want to enumerate files by name pattern, use `Glob`.
+
+### Shell
+
+**`Bash`** is the workhorse. A few things that trip people up:
+
+- Default timeout is 2 minutes per command, overridable per call up to 10 minutes. The env vars `BASH_DEFAULT_TIMEOUT_MS` and `BASH_MAX_TIMEOUT_MS` change the defaults session-wide.
+- Output is capped at 30 000 characters (raise it with `BASH_MAX_OUTPUT_LENGTH`, hard ceiling 150 000).
+- `cd` to a path within the project directory persists to later `Bash` calls. Environment variables do *not* persist across calls.
+- Shell aliases from `~/.zshrc` or `~/.bashrc` are sourced at session start.
+
+**`Monitor`** runs a command in the background and feeds each output line back to Claude in real time. Use it when you want Claude to watch a build log, a dev server, or a CI stream and react as events arrive — without polling.
+
+**`PowerShell`** is the Windows equivalent of `Bash`. On Windows without Git Bash it activates automatically; on other platforms it requires opt-in via `CLAUDE_CODE_USE_POWERSHELL_TOOL=1`.
+
+### Search
+
+**`Grep`** uses ripgrep under the hood. Three output modes: `files_with_matches` (default — just filenames), `content` (matching lines), `count` (hit count per file). It respects `.gitignore` and is the right tool for "which files contain X."
+
+**`LSP`** provides code intelligence via language servers: jump to definition, find references, type errors, symbol search, call hierarchy. After each file edit, `LSP` automatically reports type errors so Claude can fix them without a separate build step. It requires the code intelligence plugin.
+
+### Web
+
+**`WebSearch`** queries a search backend and returns titles and URLs only — it does not fetch page content. Claude follows up with `WebFetch` to read pages. You can scope results with `allowed_domains` or `blocked_domains` (not both in a single call).
+
+**`WebFetch`** fetches a URL and converts HTML to Markdown via a small extraction model. It is intentionally lossy — you get a processed summary, not raw HTML. Important constraints:
+
+- 15-minute cache (subsequent fetches of the same URL return cached output)
+- Cross-host redirects return redirect metadata instead of following automatically; Claude must issue a second fetch
+- Large pages are truncated before processing
+- HTTP is auto-upgraded to HTTPS
+
+<Callout type="warning" title="WebFetch is an extraction, not a mirror">
+Because WebFetch runs the page through a small model before returning results to Claude, the output is a best-effort extraction of the page's main content. Structured data, tables, and sidebar content are often dropped. If you need complete fidelity, use `Bash` with `curl` and pipe the output yourself.
+</Callout>
+
+### Agents
+
+**`Agent`** spawns a named or forked subagent. Named subagents start fresh with only their own system prompt; forked subagents inherit the full parent conversation. The `Agent` tool itself is silent (no approval prompt), but the subagent's own tool calls surface in the parent terminal as permission prompts.
+
+**`TaskCreate` / `TaskUpdate` / `TaskList` / `TaskGet` / `TaskStop`** manage the session task list — useful for breaking long jobs into trackable units. These replaced `TodoWrite` (disabled by default since v2.1.142).
+
+**`SendMessage`** lets agents communicate in a team — route a message to a teammate or resume a subagent. This is experimental; check current SDK docs before building on it.
+
+### Scheduling and notifications
+
+**`CronCreate`** schedules a recurring or one-shot prompt within the session. **`CronList`** and **`CronDelete`** manage the schedule. **`Monitor`** (shell surface) is the complement: it reacts to real-time output, while cron fires on a time interval.
+
+**`PushNotification`** sends a desktop or phone notification via Anthropic-hosted infrastructure. Pair it with `agentPushNotifEnabled: true` in settings so Claude can proactively alert you when a long-running task finishes.
+
+**`RemoteTrigger`** creates and runs Routines on claude.ai. Available on Pro, Max, Team, and Enterprise plans.
+
+### MCP
+
+**`ListMcpResourcesTool`** and **`ReadMcpResourceTool`** let Claude browse and read resources exposed by connected MCP servers — not just tools. **`ToolSearch`** dynamically loads deferred MCP tool schemas on demand, keeping context overhead low; without it, all MCP schemas load on every request.
+
+### Notebooks
+
+**`NotebookEdit`** modifies Jupyter notebook cells by cell ID (replace, insert, delete). It prompts for approval. For reading notebooks, use `Read` — it renders cell outputs, not raw JSON.
+
+## Parallelism: what runs together
+
+Read-only tools (`Read`, `Glob`, `Grep`, and read-only MCP tools) can run concurrently in a single turn. State-modifying tools (`Edit`, `Write`, `Bash`) run sequentially. Custom tools default to sequential; set `readOnlyHint` in tool annotations to enable parallelism.
+
+<Mermaid chart={`flowchart LR
+    subgraph parallel["Parallel (same turn)"]
+        R1["Read file A"]
+        R2["Read file B"]
+        G["Grep pattern"]
+    end
+    subgraph sequential["Sequential"]
+        E1["Edit file A"]
+        E2["Edit file B"]
+    end
+    parallel --> sequential
+`} />
+
+This matters for speed: if Claude needs to read five files, it can do it in one turn. If it needs to make five edits, it takes five turns — plan accordingly when you care about latency.
+
+## Permission rules quick reference
+
+Every tool call can be targeted by a permission rule. The format is `ToolName(specifier)`:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run *)",
+      "Bash(git status)",
+      "Read(~/projects/**)",
+      "Edit(/src/**)",
+      "WebFetch(domain:docs.anthropic.com)"
+    ],
+    "deny": [
+      "Read(~/.ssh/**)",
+      "Bash(rm -rf *)"
+    ]
+  }
+}
+```
+
+Specifier syntax by tool group:
+
+| Tool(s) | Specifier type | Example |
+|---|---|---|
+| `Bash`, `Monitor` | Command pattern | `Bash(npm run *)` |
+| `Read`, `Grep`, `Glob`, `LSP` | Path glob | `Read(~/secrets/**)` |
+| `Edit`, `Write`, `NotebookEdit` | Path glob | `Edit(/src/**)` |
+| `WebFetch` | Domain prefix | `WebFetch(domain:example.com)` |
+| `WebSearch`, `Agent`, `Skill` | Name or no specifier | `Agent(Explore)` |
+
+Deny beats allow when both rules match. An `Edit(path)` allow rule implicitly grants read access to the same path.
+
+<Callout type="tip" title="Use /permissions to audit what's active right now">
+Before kicking off a long-running automated task, type `/permissions` in the CLI. You will see every active allow and deny rule, which tools are currently approved, and which domains have already been visited. It is the fastest way to confirm your rules cover everything the task needs before you walk away.
+</Callout>
+
+## Key gotchas in one place
+
+**`Edit` requires a prior `Read` (or equivalent view).** The file must have been seen by the `Read` tool, or viewed via a `Bash` call using `cat`, `head`, `tail`, `sed -n`, `grep`, `egrep`, or `fgrep` in the current conversation. The file must not have changed on disk since that view. If you see an "edit failed" error, this is the most common cause.
+
+**`Glob` ignores `.gitignore`.** If you expect it to skip `node_modules/` or `dist/`, set `CLAUDE_CODE_GLOB_NO_IGNORE=false`. Or just use `Grep`, which respects `.gitignore` by default.
+
+**`Bash` environment variables reset between calls.** If a script sets `export FOO=bar`, that value is gone by the next `Bash` call. Write persistent environment to the file at `$CLAUDE_ENV_FILE` from a hook instead.
+
+**`WebFetch` caches for 15 minutes.** If a page changed after you first fetched it in a session, Claude will see stale content. There is no manual cache-bust — start a new session if freshness matters.
+
+**`Monitor` is unavailable on some platforms.** It is not available on Amazon Bedrock, Google Vertex AI, or Microsoft Foundry, and it is disabled when `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set.
+
+**`TodoWrite` is disabled by default.** Since v2.1.142, the `Task*` family of tools replaces it. Set `CLAUDE_CODE_ENABLE_TASKS=0` only if you need to re-enable the legacy behavior.
+
+## Recap
+
+The built-in tool surface has twelve areas — filesystem, shell, search, web, agents, tasks, MCP, scheduling, notifications, notebooks, code intelligence, and platform. Silent tools observe; permissioned tools change state. Read-only tools parallelize; write tools sequence. Permission rules in `settings.json` give you fine-grained control over every tool call without changing the mode.
+
+**Next:** the [Hooks](/c/hooks) chapter shows how to attach custom logic to any tool event — before it runs, after it completes, or when Claude finishes responding.

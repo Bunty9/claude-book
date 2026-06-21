@@ -1,0 +1,178 @@
+# Permissions, modes & safety
+
+Claude Code can read files, run shell commands, browse the web, edit code, and spawn background agents — but it never does any of that silently without rules you set. This chapter explains the permission model that governs every tool call, the six operating modes that let you tune how much it asks vs. acts, and the practical habits that keep you safely in control.
+
+## Why permissions exist
+
+Every action Claude takes in your session goes through a tool call. Reading a file is a `Read` tool call. Running `npm test` is a `Bash` tool call. Creating or overwriting a file is a `Write` or `Edit` tool call. The permission system sits between Claude's decision to use a tool and the tool actually running.
+
+This matters because Claude operates inside your real environment — your filesystem, your shell, your git history. A single misunderstood instruction could delete the wrong files, push credentials to a public repo, or rack up unexpected API costs. Permissions are the mechanism that keeps you the decision-maker, even when Claude is moving fast.
+
+<Callout type="note" title="Tool calls are the unit of control">
+Every capability Claude has — shell, files, web, agents, scheduling — surfaces as a named tool. Permission rules target tool names, so everything is configurable at the same level of abstraction. The interactive widget below lets you explore the full tool catalog and see which tools require approval by default.
+</Callout>
+
+## The full tool surface at a glance
+
+The widget below is your reference for all built-in tools: what each one does, which surface it belongs to (filesystem, shell, web, agents, …), and whether it prompts for approval before running.
+
+<ToolSurfaceMap/>
+
+A few patterns worth internalising from the catalog:
+
+- **Read-only tools are silent.** `Read`, `Glob`, `Grep`, and `LSP` never prompt — they can only observe, not change. You'll notice these have a "silent" badge.
+- **State-changing tools prompt by default.** `Bash`, `Edit`, `Write`, `WebFetch`, and `WebSearch` all show an approval dialog in the default mode before they run the first time per domain or command pattern.
+- **Agent tools are silent.** Spawning a subagent (`Agent`) does not itself require approval, but the subagent's own tool calls do — through the parent terminal.
+
+## The six permission modes
+
+Claude Code ships with six modes, selectable per session. Think of them as a dial from "always ask" to "never ask."
+
+<Mermaid chart={`
+flowchart LR
+    plan["plan\n(read-only)"]
+    default["default\n(prompt everything)"]
+    acceptEdits["acceptEdits\n(auto-approve edits)"]
+    dontAsk["dontAsk\n(CI / headless)"]
+    auto["auto\n(model decides)"]
+    bypass["bypassPermissions\n(isolated containers only)"]
+
+    plan --> default --> acceptEdits --> dontAsk
+    default --> auto
+    dontAsk --> bypass
+`} />
+
+### default
+
+The baseline. Claude prompts before every tool call that is not already covered by an explicit allow rule. If there is no allow rule and no one to ask (e.g., non-interactive CI), the call is denied. This is the safest starting point when you are exploring a new codebase or doing something irreversible.
+
+### acceptEdits
+
+Auto-approves file edits (`Edit`, `Write`, `NotebookEdit`) and common filesystem operations (`mkdir`, `touch`, `mv`, `cp`). Shell commands, web fetches, and anything else still follow default rules. Good for code-writing sessions where you want flow but still care about shell commands.
+
+### plan
+
+Read-only exploration mode. File edits are never auto-approved — you will always see a prompt before any file changes. Use this when you want Claude to research a codebase or draft a plan without touching anything on disk. Toggle with `Shift+Tab` in the CLI or the `/plan` command.
+
+### dontAsk
+
+Never prompts. Every tool call either passes an existing allow rule or is denied silently. Designed for CI/CD pipelines and automation scripts where there is no human to approve anything. Pre-populate your allow rules carefully before switching to this mode.
+
+### auto *(TypeScript SDK only)*
+
+A model-based classifier decides whether to approve or deny each tool call. This is an experimental mode for embedded applications; the CLI does not expose it by default. Administrators can prevent it from being activated via `disableAutoMode: "disable"` in managed settings.
+
+### bypassPermissions
+
+Skips every permission check. Intended only for isolated containers — sandboxed CI, Docker environments — where Claude literally cannot reach anything you do not want it to touch. It cannot run as root on Unix as an additional hard limit.
+
+<Callout type="warning" title="bypassPermissions is a scalpel, not a default">
+Only use `bypassPermissions` (CLI flag `--dangerously-skip-permissions`) when the environment itself provides the isolation. Running it on your development laptop means a misunderstood prompt could delete files, push commits, or run arbitrary commands with no guardrail.
+</Callout>
+
+**Switching modes in the CLI:** press `Shift+Tab` to cycle through `normal → acceptEdits → plan → normal`. You can also type `/plan` to toggle plan mode directly.
+
+## Allow and deny rules
+
+Modes set the default behaviour. Rules let you carve out exceptions — specific tools or paths that should always run (or always be blocked) without a prompt.
+
+Rules live in `settings.json` under `permissions.allow` and `permissions.deny`. The format is `ToolName(specifier)`:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run *)",
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Read(~/projects/**)",
+      "Edit(/src/**)",
+      "WebFetch(domain:docs.example.com)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Read(~/.ssh/**)"
+    ]
+  }
+}
+```
+
+A few things to know:
+
+- **Deny beats allow.** If both a deny rule and an allow rule match a tool call, deny wins.
+- **`Edit(path)` implicitly allows reading** the same path — you do not need a separate `Read` rule for the same glob.
+- **Specifier formats vary by tool:** `Bash` and `Monitor` use command patterns; `Read`, `Grep`, `Glob`, and `LSP` use path patterns; `WebFetch` uses `domain:` prefixes; `WebSearch` has no specifier (it's all-or-nothing).
+- **No specifier means the entire tool.** `"allow": ["WebSearch"]` approves every web search without prompt.
+
+### Settings scope hierarchy
+
+Rules can live at four levels. Higher levels win:
+
+| Level | File | Who controls it |
+|---|---|---|
+| Managed (highest) | MDM / server config | IT / platform admin |
+| CLI args | `--allowedTools` / `--disallowedTools` | Session caller |
+| Local | `.claude/settings.local.json` | You, not committed |
+| Project | `.claude/settings.json` | Team, committed |
+| User (lowest) | `~/.claude/settings.json` | You, all projects |
+
+The local file is gitignored by convention — it is the right place for personal overrides that should not affect teammates. Project settings are committed alongside the code, so the whole team gets the same baseline rules.
+
+<Callout type="tip" title="Start from the /permissions command">
+In an interactive session, type `/permissions` to see which rules are currently active and what each tool's status is. It is the fastest way to audit what Claude can do right now without opening any files.
+</Callout>
+
+## Hooks: automation beyond rules
+
+Permission rules control whether a tool runs. Hooks let you react to events around tool calls — before they run, after they complete, or when Claude finishes responding. They are the extension point for enforcement, auditing, and automation.
+
+The most useful hook for safety is `PreToolUse`. Any script registered there runs before the matched tool executes. Exit code 2 blocks the tool call entirely:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/audit-command.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The `PermissionRequest` hook fires whenever a permission dialog would appear. You can auto-approve or auto-deny matching calls programmatically — useful for building custom approval UIs or headless pipelines that still need selective gating.
+
+Hooks are covered in depth in the Hooks chapter. For now, the key mental model: **rules are static filters; hooks are dynamic logic.**
+
+## The sandbox
+
+For the strongest isolation, Claude Code supports a sandboxed `Bash` tool that confines shell commands at the OS level. Unlike `deny` rules (which only block recognised bash patterns Claude constructs), sandbox enforcement applies to every process spawned — including indirect access from Python scripts, Node programs, or shell one-liners that Claude writes.
+
+Sandbox network rules are independent of `WebFetch` allow rules. Enabling the sandbox in settings does not automatically grant network access to domains already in your `WebFetch` allowlist; you configure them separately.
+
+The sandbox is not available on Windows (where the `PowerShell` tool is used instead).
+
+## Practical habits for staying in control
+
+**Use `plan` mode when exploring.** Before you let Claude make changes to an unfamiliar codebase, spend a turn or two in plan mode. Let it read, search, and tell you what it would do. Then exit plan mode and approve the actual changes.
+
+**Commit allow rules with your code.** Project-level `settings.json` is committed. If your project always needs `npm run build` and `npm test`, add those to `permissions.allow` so every session — and every CI run — gets the same baseline without manual approval.
+
+**Use `deny` for things that should never happen.** If your project has a directory that should never be touched (`.env`, `~/.ssh`, prod credentials), add a `deny` rule. It costs nothing and removes the category of mistake entirely.
+
+**Check `/permissions` before long runs.** Before you kick off an extended agentic task, open `/permissions` and verify the allow rules match what the task actually needs. An unexpected permission prompt mid-run can block automation for hours.
+
+**For CI, use `dontAsk` + an explicit allowlist.** The pattern is: define every tool call the CI job needs in `permissions.allow`, set `permissionMode: "dontAsk"` in the run options, and let any unanticipated call fail fast rather than hang waiting for input.
+
+## Recap
+
+The permission system has three layers: **modes** (how much Claude asks by default), **rules** (static allow/deny for specific tools and paths), and **hooks** (dynamic logic around tool events). Together they give you fine-grained control over exactly what Claude can touch — from "prompt for everything" in a new project to "fully headless" in a locked-down CI container.
+
+**Next:** the [The agent loop & tool calls](/c/agent-loop) chapter goes inside the loop to show how tool calls are sequenced, parallelised, and how results flow back to Claude.

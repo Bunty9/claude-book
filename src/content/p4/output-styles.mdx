@@ -1,0 +1,199 @@
+# Output styles & compression
+
+Claude Code ships with a small but high-leverage system for changing how it communicates: **output styles**. This chapter covers the four built-in styles, how to write your own, and one power-user compression technique — caveman mode — that cuts response length by roughly three-quarters without sacrificing technical accuracy. You will also see when compression is worth the trade-off and when it is not.
+
+## What output styles actually are
+
+An output style is a named modification to Claude's system prompt. When you activate a style, Claude Code replaces (or augments) its built-in engineering instructions with whatever the style file specifies. The result is a different default behaviour — more verbose, more educational, more terse — without you having to repeat preferences in every message.
+
+Styles are not per-message instructions. They persist for the session and survive context compaction. They are the closest thing Claude Code has to a personality dial.
+
+<Callout type="note" title="Styles modify the system prompt, not your messages">
+An output style changes what Claude Code injects before your first message. It does not change how the model reasons or which tools it can use — only how it communicates and, in some cases, how eagerly it acts.
+</Callout>
+
+## The four built-in styles
+
+Claude Code ships four named styles out of the box. Each corresponds to a different working mode.
+
+| Style | Core behaviour | Best for |
+|---|---|---|
+| **Default** | Built-in engineering instructions, balanced verbosity | Everyday coding tasks |
+| **Proactive** | Immediate action, reasonable assumptions, less planning | Rapid iteration, well-scoped tasks |
+| **Explanatory** | Adds "Insights" callouts between engineering steps | Onboarding, learning a new codebase |
+| **Learning** | Insights + `TODO(human)` markers for deliberate practice | Building skills, paired programming |
+
+A note on what Proactive does and does not do: it makes Claude lean toward execution over clarifying questions, but it does **not** change your permission mode. You still see approval prompts for Bash and file writes. Proactive affects the stance, not the guardrails.
+
+### When each style earns its place
+
+**Default** is the right choice for most sessions. It is what Claude Code was designed around.
+
+**Proactive** shines when you have already scoped a task clearly and want Claude to start rather than ask. Pair it with a well-written `CLAUDE.md` or a detailed prompt, and it cuts the planning overhead. Avoid it for open-ended exploration — you want questions, not assumptions, when the problem space is fuzzy.
+
+**Explanatory and Learning** are teaching modes. They trade throughput for understanding. If you are pairing with a junior engineer, onboarding someone to a codebase, or deliberately building your own mental model of a new system, these styles make every action an annotated example. For high-velocity solo work, they are too slow.
+
+<Callout type="tip" title="Switch styles for the phase, not the project">
+You can change the active style mid-project by editing `outputStyle` in your settings and running `/clear` (or starting a new session). Consider Default for feature work and Explanatory for architecture explorations — the same project, different phases.
+</Callout>
+
+## How to switch styles
+
+The canonical path is `/config` in the CLI, which shows a menu for Output style. The setting persists to `settings.json`:
+
+```json
+{
+  "outputStyle": "Proactive"
+}
+```
+
+Valid values: `"Default"`, `"Proactive"`, `"Explanatory"`, `"Learning"`, or any custom style name you have defined. The change takes effect after `/clear` or a new session — not mid-conversation, because the system prompt is only injected at session start.
+
+<Callout type="warning" title="The /output-style command is gone">
+The standalone `/output-style` slash command was deprecated in v2.1.73 and removed in v2.1.91. If you see references to it in older guides, they are stale. Use `/config` instead.
+</Callout>
+
+## Custom output styles
+
+You can define styles for your own working preferences. A style is a Markdown file placed in:
+
+- `~/.claude/output-styles/` — personal, applies to all your projects
+- `.claude/output-styles/` — project-local, shared with teammates
+
+The filename without the `.md` extension becomes the style name (override with a `name` frontmatter field).
+
+A minimal custom style looks like this:
+
+```markdown
+---
+name: Terse Engineer
+description: Drop filler, emit only technically precise prose and code.
+keep-coding-instructions: true
+---
+
+Respond with the minimum words needed to convey the answer precisely.
+Drop articles and filler phrases ("certainly", "of course", "happy to help").
+Use sentence fragments where meaning is clear without a full sentence.
+Code, commit messages, and security warnings are always written in full.
+When uncertain, state uncertainty in one sentence and continue.
+```
+
+The `keep-coding-instructions: true` field tells Claude Code to **add** your content on top of the built-in engineering instructions rather than replacing them. If you omit it (or set it to `false`), your style replaces the engineering baseline — suitable for non-coding use cases, risky for anything involving files and shell commands.
+
+One more field worth knowing: `force-for-plugin: true` makes a style auto-activate whenever a particular plugin is enabled. This is mostly relevant to plugin authors, but it shows that styles are a first-class integration surface.
+
+## Compression: the caveman pattern
+
+Output styles address the *shape* of responses. Compression addresses the *volume*. These are orthogonal levers — you can have a terse version of any style.
+
+The **caveman pattern** is a community-developed compression technique that emerged from heavy Claude Code usage. The core idea: teach the model to drop low-information words without dropping technical precision.
+
+What caveman mode changes:
+
+- Drops articles ("the", "a", "an")
+- Uses sentence fragments where meaning is unambiguous
+- Abbreviates common technical terms (`DB`, `auth`, `req`, `res`, `fn`, `impl`, `cfg`)
+- Uses arrows (`→`) for causality instead of "which causes" / "resulting in"
+- Drops affirmations ("Certainly!", "Of course", "Great question")
+
+What it explicitly keeps:
+
+- Code, exact CLI commands, error messages — written verbatim
+- Commit messages and PR descriptions — full prose
+- Security warnings — never abbreviated
+- Ambiguous cases — stated clearly even if longer
+
+The net effect, measured empirically on real sessions, is roughly 75% token reduction in explanatory prose without loss of technical accuracy. Code blocks are unchanged. The saving is in the connective tissue between code blocks.
+
+A caveman response for "why is the permission cache not invalidating?" might look like:
+
+```
+Permission cache keyed by (userId, module, action). TTL 5 min in Redis.
+Granting/revoking role doesn't call invalidatePermCache(userId) → stale
+cached scope survives TTL. Fix: call invalidateAllPermCache() in role-
+assignment route, not just user routes. Already done for direct Permission
+rows; RolePermission path missed.
+```
+
+Versus the default style, which would add prose framing ("Great question — let me walk you through the caching architecture…"), restate the question, and conclude with a summary. The caveman version surfaces the answer in four lines.
+
+### Implementing caveman as a custom style
+
+```markdown
+---
+name: caveman
+description: ~75 % token reduction for terse technical sessions.
+keep-coding-instructions: true
+---
+
+Communicate in minimal, precise fragments.
+
+Rules:
+- Drop articles (a/an/the) when meaning is clear without them.
+- Use fragments: "Auth uses JWT, 15 min access + 7 day refresh" not
+  "Authentication uses JWT with a 15-minute access token and a 7-day
+  refresh token."
+- Abbreviate: DB, auth, req, res, fn, impl, cfg, init, env, prod, dev.
+- Causality: use → not "which causes" / "results in" / "leading to".
+- Skip affirmations: never start with "Certainly", "Of course",
+  "Happy to help", "Great question".
+- Skip summaries that restate what was just said.
+
+Never compress:
+- Code blocks, CLI commands, error messages — always verbatim.
+- Commit messages and PR descriptions — full conventional prose.
+- Security warnings — never abbreviate.
+- Anything ambiguous — clarity beats brevity.
+
+User can say "normal" or "stop caveman" to revert.
+```
+
+Place this in `~/.claude/output-styles/caveman.md`, set `"outputStyle": "caveman"` in settings, and `/clear` to activate.
+
+<Callout type="tip" title="Per-session activation works too">
+You do not have to set caveman as your default. You can say "switch to caveman mode" at the start of any session and Claude will apply the compressed style for that conversation. Revert any time with "normal mode" or "stop caveman".
+</Callout>
+
+## When compression pays off — and when it hurts
+
+Compression is not universally beneficial. The right call depends on what you are using Claude for.
+
+<Mermaid chart={`graph TD
+    Q{What is the session for?}
+    Q --> A["Implementation / debugging<br/>→ Compress: yes"]
+    Q --> B["Onboarding / teaching<br/>→ Compress: no<br/>Use Explanatory"]
+    Q --> C["Architecture review<br/>→ Compress: moderate<br/>Keep reasoning visible"]
+    Q --> D["Commit / PR writing<br/>→ Never compress<br/>Full prose required"]
+
+    style A fill:var(--tip-subtle),color:var(--fg)
+    style B fill:var(--note-subtle),color:var(--fg)
+    style C fill:var(--warning-subtle),color:var(--fg)
+    style D fill:var(--danger-subtle),color:var(--fg)
+`} />
+
+The cost of compression is reduced legibility for anyone other than the person who set the style. If you share session transcripts with teammates, a caveman session reads like notes, not documentation. If your organization uses Claude Code for onboarding, the Learning style is the opposite of caveman for good reason.
+
+The benefit is speed and focus. When you trust the model, know the codebase, and want answers — not explanations — compression removes friction from every response.
+
+## Styles in multi-session projects
+
+Output styles interact with the memory system in a subtle way. The style modifies the system prompt injected at session start. If your project uses the remember plugin or structured memory files, those facts are injected on top of whatever system prompt the style produces. The style sets the register; memory fills in the substance.
+
+This means: if you want consistent terse behaviour across sessions without re-activating caveman each time, set `outputStyle` in your project-level `.claude/settings.json`. Every session on that project picks it up without any per-session prompt.
+
+```json
+// .claude/settings.json
+{
+  "outputStyle": "caveman"
+}
+```
+
+For an organization that wants consistent style across all developers on a project, this is the right place to set it — the file is committed to the repository and shared.
+
+## Recap
+
+Output styles are named system-prompt modifications that persist for the session. The four built-ins cover the main modes: balanced (Default), action-first (Proactive), educational (Explanatory), and learn-by-doing (Learning). Custom styles live in `~/.claude/output-styles/` or `.claude/output-styles/` and become available by name via `/config`.
+
+Compression — the caveman pattern — is a separate but complementary lever that cuts explanatory verbosity by roughly 75% while leaving code and commit prose intact. It suits high-trust implementation sessions and scales well across multi-session projects when set in `settings.json`.
+
+The next chapter turns from how Claude communicates to how you can **spec and structure the work itself** — writing prompts and task descriptions that get reliable results on complex, multi-step problems.

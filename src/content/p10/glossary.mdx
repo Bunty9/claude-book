@@ -1,0 +1,201 @@
+# Glossary
+
+This glossary collects the key terms used throughout the book and gives each a plain-language definition. Scan it top to bottom for a quick mental map of the whole system, or jump straight to an unfamiliar word when you encounter it in a chapter. Precise technical meanings are kept, but jargon is explained, not assumed.
+
+<Callout type="tip" title="If a term still feels fuzzy">
+Each definition links back to the part of the book where the concept is introduced in full. A quick definition here is a starting point, not a substitute for the chapter itself.
+</Callout>
+
+## A
+
+### Agent loop
+The turn-based cycle at the heart of Claude Code. One cycle: Claude receives a prompt, decides which tools (if any) to call, gets the results of those calls back, then either calls more tools or produces a final text response. The loop repeats until Claude produces a response with no tool calls. The only persistent state across turns is the append-only message array — there is no hidden memory between steps. (See Part 2, *Agent loop anatomy*.)
+
+### Allow rule
+A permission setting that pre-approves a specific tool call so Claude never needs to ask before running it. Rules use the format `ToolName(specifier)` — for example `Bash(npm run *)` pre-approves any npm script, and `Edit(/src/**)` pre-approves edits inside your source directory. Allow rules live in `settings.json` under `permissions.allow`. Deny rules take precedence over allow rules when both match. (See Part 2, *Permissions and modes deep dive*.)
+
+### Auto-compact
+A setting (`autoCompactEnabled`, on by default) that triggers automatic context compaction when the conversation history approaches the model's context window limit. Claude summarises older parts of the conversation and emits a `compact_boundary` marker. Manual compaction via `/compact` is more predictable and lets you direct what gets preserved. (See Part 2, *Settings and environment*.)
+
+### Auto-memory
+A feature that lets Claude read and write structured facts to `~/.claude/memory/` between sessions. Enabled by default. Useful for preferences, project quirks, and recurring context that would otherwise be re-explained every session. Disable with `autoMemoryEnabled: false` or the `CLAUDE_CODE_DISABLE_AUTO_MEMORY` environment variable. (See Part 2, *Settings and environment*.)
+
+## B
+
+### Bash tool
+The built-in tool that executes shell commands in your local environment. Default timeout is 2 minutes per command (overridable up to 10 minutes). Output is capped at 30,000 characters by default. Working directory changes (`cd`) carry over across Bash calls within a session; environment variable changes do not. Requires user approval by default. (See Part 2, *Tool surface*.)
+
+### BullMQ
+Not a Claude Code term — but appears in the book's worked examples: a Node.js background-job queue built on Redis. Used in the sample CRM project to dequeue webhook payloads and process leads asynchronously. Mentioned here because the book's project examples use it alongside Claude Code's automation features. (See Part 5.)
+
+### bypassPermissions
+The most permissive operating mode. Skips all permission checks — no prompts, no deny rules. Intended only for isolated containers or test environments where there is nothing sensitive to protect. Cannot run as root on Unix. Activated via the `--dangerously-skip-permissions` CLI flag. (See Part 2, *Permissions and modes deep dive*.)
+
+## C
+
+### CLAUDE.md
+A Markdown file that Claude Code automatically loads as project context at the start of every session. Place it at the repository root (or any parent directory up to the git root) to give Claude standing instructions — coding conventions, architecture notes, team rules. Personal instructions go in `~/.claude/CLAUDE.md`. Content is injected as a user message and prompt-cached after the first request. For procedures that only need to load when invoked, prefer a **Skill** instead, to avoid bloating every session's context. (See Part 2, *Memory and CLAUDE.md*.)
+
+### Context window
+The hard limit on how much text (measured in tokens) a model can hold in its active memory at once. Everything in a session — system prompt, CLAUDE.md, conversation history, tool results — counts against this budget. When the window fills, older content must be summarised or dropped. Understanding the context window is foundational to working with Claude effectively. (See Part 0, *What is an LLM?*)
+
+### compact_boundary
+A marker message emitted by Claude Code when it compacts conversation history. It signals the point before which older turns have been summarised. Visible in the SDK as a `SystemMessage` subtype. Compaction can be triggered manually with `/compact` or automatically when the context approaches its limit.
+
+## D
+
+### Deny rule
+A permission setting that blocks a specific tool call entirely — Claude is not even shown the option to run it. Deny takes precedence over allow when both rules match the same call. Use deny rules for truly off-limits operations (e.g., `Bash(rm -rf *)`) that should never run regardless of what Claude decides. (See Part 2, *Permissions and modes deep dive*.)
+
+### dontAsk mode
+An operating mode for CI/CD and headless automation. In `dontAsk`, Claude never shows permission prompts: tool calls that match an allow rule proceed; everything else is silently denied. Pre-populate your allow rules carefully before using this mode — you will not see failures unless you inspect logs. (See Part 2, *Permissions and modes deep dive*.)
+
+### Dynamic workflow
+A JavaScript orchestration script that runs many subagents concurrently in the background. Claude Code writes the script; the workflow runtime executes it. Intermediate results stay in script variables rather than in Claude's context window, enabling large-scale parallel work. Triggered by the `ultracode` keyword or the `/effort ultracode` setting. Saved workflows become slash commands under `.claude/workflows/`. (See Part 6, *Workflows*.)
+
+## E
+
+### Edit tool
+The built-in tool for making exact string replacements in files. Requires that the file was read earlier in the same conversation, and that `old_string` appears exactly once. The `replace_all: true` parameter replaces every occurrence. Because it is a state-modifying tool, it runs sequentially (not in parallel with other edits). (See Part 2, *Tool surface*.)
+
+### Effort level
+A per-session or per-prompt setting that controls how many "thinking tokens" Claude allocates before responding. Levels: `low`, `medium` (default), `high`, `xhigh`, `max`. Higher effort improves results on complex reasoning tasks at the cost of more tokens and higher latency. Set with `/effort <level>` or the `effortLevel` settings key. Effort is distinct from Extended Thinking — they can be combined independently. (See Part 2, *Settings and environment*.)
+
+### Extended Thinking
+A Claude capability where the model produces visible chain-of-thought blocks — intermediate reasoning steps you can read — before its final answer. Produces longer, more deliberate responses. Enabled with `alwaysThinkingEnabled: true` in settings or by requesting it per-call via the API. Different from effort level, though both affect response depth. (See Part 3, *Advanced model capabilities*.)
+
+## F
+
+### File checkpointing
+A safety mechanism (`fileCheckpointingEnabled: true`, on by default) that snapshots files before Claude Code edits them. The `/rewind` command restores any file to its pre-edit snapshot. Disable with `CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING` if you are confident in your git workflow and want to reduce disk usage. (See Part 2, *Settings and environment*.)
+
+### Forked subagent
+A subagent that inherits the full parent conversation context rather than starting fresh. Always runs in the background. Used when the subagent needs the history of what has already been decided. Distinguished from a named subagent, which starts with its own clean context. (See Part 6, *Subagents*.)
+
+## G
+
+### Glob tool
+The built-in tool for finding files by pattern, with `**` wildcard support. Results are sorted by modification time and capped at 100 files. Unlike `Grep`, Glob does not respect `.gitignore` by default — set `CLAUDE_CODE_GLOB_NO_IGNORE=false` to change this. (See Part 2, *Tool surface*.)
+
+### Grep tool
+The built-in tool for searching file contents using regex, built on ripgrep. Respects `.gitignore` by default. Three output modes: `files_with_matches` (default), `content`, `count`. Read-only, so it can run concurrently with other read-only tools in the same turn. (See Part 2, *Tool surface*.)
+
+## H
+
+### Hook
+A lifecycle event handler that runs custom code at specific moments in Claude's agent loop — before a tool call, after a tool call, when a session starts, when Claude finishes responding, and many more. Shell command hooks are defined in `settings.json`; SDK hooks are callback functions. Hooks can block actions (exit code 2), inject additional context, modify tool outputs, or fire side effects. There are 30 named hook events. (See Part 2, *Hooks*.)
+
+### Hook event
+One of the 30 named moments where a hook can be registered. Examples: `PreToolUse` (before any tool runs), `PostToolUse` (after a tool succeeds), `SessionStart` (at session open), `Stop` (when Claude finishes a response), `PermissionRequest` (when an approval dialog would appear). Blockable events (those where exit code 2 stops the action) include `PreToolUse`, `UserPromptSubmit`, `Stop`, `PermissionRequest`, and `SubagentStop`. (See Part 2, *Hooks*.)
+
+## L
+
+### LSP tool
+The built-in tool that connects to language servers for code intelligence: jump to definition, find references, type errors, call hierarchies, and symbol search. Requires a code intelligence plugin to be installed. After each file edit, LSP automatically reports type errors so Claude can fix issues without a separate build step. (See Part 2, *Tool surface*.)
+
+## M
+
+### maxTurns
+An option on the agent SDK (`ClaudeAgentOptions`) that caps the number of tool-use round trips in a single run. The final text-only turn does not count against this limit. When the cap is reached, the SDK emits a `ResultMessage` with subtype `error_max_turns`. Pair with `maxBudgetUsd` for cost control in unattended runs. (See Part 6, *Agent SDK*.)
+
+### MCP (Model Context Protocol)
+An open protocol for connecting Claude Code to external tools, data sources, and services. MCP servers expose tools that appear in Claude's tool list as `mcp__<server>__<action>`. Servers are configured in `.mcp.json` or in `settings.json` under `mcpServers`. The `ToolSearch` built-in tool enables deferred loading of MCP tool schemas, keeping context overhead low. (See Part 7, *MCP and integrations*.)
+
+### Monitor tool
+A built-in tool that runs a command in the background and feeds each output line back to Claude in real time as it arrives. Useful for watching CI logs, file watchers, or server output without polling. Uses the same permission rules as Bash. Not available on Amazon Bedrock, Vertex AI, or Foundry. (See Part 2, *Tool surface*.)
+
+## O
+
+### Output style
+A system prompt modifier that changes Claude's default behaviour and communication pattern. Four built-in styles: `Default` (standard engineering instructions), `Proactive` (acts immediately, makes assumptions), `Explanatory` (adds reasoning commentary), `Learning` (adds `TODO(human)` markers for pair-programming). Custom styles are Markdown files in `.claude/output-styles/`. Changed via `/config`. (See Part 4, *Output styles*.)
+
+## P
+
+### Permission mode
+One of six settings that controls how aggressively Claude Code prompts for approval before running tools. In order from most restrictive to least: `plan` (read-only, always prompts for edits), `default` (prompts for every non-allowed operation), `acceptEdits` (auto-approves file edits), `dontAsk` (never prompts; deny unless allowed), `auto` (model classifier decides), `bypassPermissions` (no checks at all). (See Part 2, *Permissions and modes deep dive*.)
+
+### Plan mode
+A permission mode where file edits are never auto-approved — Claude can read and explore freely, but writing to disk always requires explicit confirmation. Toggle with `Shift+Tab` or `/plan`. Useful when you want Claude to research a codebase or draft a plan without touching any files. (See Part 2, *Permissions and modes deep dive*.)
+
+### Prompt caching
+An automatic optimisation where static portions of the context — the system prompt, CLAUDE.md, tool definitions — are cached after the first request. Subsequent turns do not re-pay the token cost for those sections. Happens transparently; no configuration needed. (See Part 3, *Cost and performance*.)
+
+### Prompt (user prompt)
+The text you send to Claude for a single turn of the conversation. A prompt can be a question, instruction, code snippet, pasted document, or any combination. The entire conversation history is included as context alongside your new message every time. Quality, specificity, and context in the prompt are the primary levers for improving Claude's output. (See Part 0, *The chat loop*.)
+
+## R
+
+### Read tool
+The built-in tool for reading file contents. Returns text with line numbers. Handles plain text, images, PDFs, and Jupyter notebooks. Read-only, so it can run in parallel with other read-only tools (`Glob`, `Grep`, `LSP`) within the same turn. Required before `Edit` or `Write` can modify an existing file. (See Part 2, *Tool surface*.)
+
+### ResultMessage
+The final message the agent SDK emits at the end of a run. Contains the final text response, total token usage, session cost, and session ID. Subtypes indicate how the loop ended: `success`, `error_max_turns`, `error_max_budget_usd`, `error_during_execution`, or `error_max_structured_output_retries`. (See Part 6, *Agent SDK*.)
+
+### Round-robin assignment
+A scheduling strategy that distributes work (tasks, leads, API calls) evenly across a pool of targets by cycling through them in order. Not a Claude Code term, but used in the book's worked automation examples when distributing incoming leads across sales agents. (See Part 5, *Automation case study*.)
+
+## S
+
+### Settings scope hierarchy
+The four-level priority order that determines which `settings.json` value wins when the same key appears in multiple places. From highest to lowest priority: Managed settings (MDM-deployed, cannot be overridden) → CLI arguments → Local (`.claude/settings.local.json`, gitignored) → Project (`.claude/settings.json`) → User (`~/.claude/settings.json`). Managed settings are absolute; user settings are overridden by everything above them. (See Part 2, *Settings and environment*.)
+
+### Skill
+A Markdown file (`SKILL.md` with YAML frontmatter) that extends Claude's capabilities as a slash command. Skills load lazily — the body content reaches Claude only when the skill is invoked, unlike CLAUDE.md which loads on every request. Skills can inject live context (via `!`-prefixed shell commands in the file body), restrict their own tool access, specify a model, and run in a subagent context. Stored in `.claude/skills/<name>/SKILL.md` (project) or `~/.claude/skills/<name>/SKILL.md` (personal). (See Part 6, *Skills*.)
+
+### Subagent
+A separate Claude instance spawned inside a session to handle a specific task in isolation. Named subagents start with a fresh context; forked subagents inherit the parent's conversation. Subagents appear in the `/agents` panel. Their tool calls flow through the parent terminal for permission prompts. Custom subagents are defined as Markdown files with YAML frontmatter in `.claude/agents/` (project) or `~/.claude/agents/` (personal). (See Part 6, *Subagents*.)
+
+### System prompt
+Text injected before the first user message that gives Claude standing instructions for the entire session. In Claude Code, the system prompt is set internally by the CLI and modified by output styles. In the API and SDK, you supply it directly. CLAUDE.md is injected as a user message after the system prompt — not as part of the system prompt itself. (See Part 0, *The chat loop*.)
+
+## T
+
+### Token
+The basic unit of text that language models read and generate. Roughly 3–4 characters of English text, though the exact boundary depends on the tokeniser. Tokens are the currency of the context window: every message, tool result, and piece of injected context consumes tokens. Understanding token cost is essential for managing long-running sessions and controlling API spend. (See Part 0, *What is an LLM?*)
+
+### Tool call
+A structured request from Claude to execute a specific capability — read a file, run a command, search the web. Each tool call has a name and typed parameters. The result is fed back into the conversation as a `UserMessage` before the next model turn. Read-only tool calls can run in parallel; state-modifying calls run sequentially. (See Part 2, *Agent loop anatomy*.)
+
+### ToolSearch
+A built-in tool that dynamically loads MCP tool schemas on demand. Because MCP tools are not loaded into the context upfront (they would inflate every session), `ToolSearch` fetches the schema for a specific tool when Claude needs it. On Google Vertex AI, or when a non-first-party `ANTHROPIC_BASE_URL` is configured, `ToolSearch` is disabled and all MCP schemas load on every request instead. (See Part 7, *MCP and integrations*.)
+
+### Turn
+One complete cycle of the agent loop: Claude receives the current context, produces output (tool calls and/or a text response), and the results are appended to the message array. `maxTurns` counts only tool-use turns — the final text-only response does not count as a turn against the limit. (See Part 2, *Agent loop anatomy*.)
+
+## U
+
+### ultracode
+An effort level that combines `xhigh` reasoning depth with automatic dynamic workflow orchestration. When you include the word `ultracode` in a prompt (or set `/effort ultracode` for the session), Claude plans and executes work across many concurrent subagents rather than working sequentially in a single context. Use it for large-scale refactors, bulk processing, or multi-step research. Press `Option+W` / `Alt+W` to suppress the trigger for a single prompt. (See Part 6, *Workflows*.)
+
+## W
+
+### WebFetch tool
+The built-in tool for fetching a URL and converting its content to Markdown. Lossy by design: an extraction prompt runs via a small fast model before Claude sees the result, so you receive a distilled summary rather than raw HTML. HTTP is auto-upgraded to HTTPS. Results are cached for 15 minutes. Requires approval by default; preapproved documentation domains skip the prompt. (See Part 2, *Tool surface*.)
+
+### WebSearch tool
+The built-in tool for querying the web. Returns titles and URLs only — not page content. Claude follows up with `WebFetch` to read specific pages. May issue up to 8 backend searches per call, refining results internally. Available on the Claude API and Microsoft Foundry; available on Vertex AI only with Claude 4 models; not available on Amazon Bedrock. (See Part 2, *Tool surface*.)
+
+### Workflow
+See *Dynamic workflow*.
+
+### Write tool
+The built-in tool for creating or overwriting files. When overwriting an existing file, the file must have been read earlier in the same conversation. Unlike `Edit`, `Write` replaces the entire file content. State-modifying, so it runs sequentially and requires approval by default. (See Part 2, *Tool surface*.)
+
+---
+
+## Quick recap
+
+The terms above map onto three layers of the system:
+
+```
+Model layer         Token · Context window · Turn · System prompt · Prompt caching
+─────────────────────────────────────────────────────────────────────────────────
+Agent loop layer    Agent loop · Tool call · ResultMessage · maxTurns
+                    Read · Edit · Write · Bash · Glob · Grep · WebFetch · WebSearch
+─────────────────────────────────────────────────────────────────────────────────
+Configuration       CLAUDE.md · Skill · Subagent · Hook · Permission mode
+layer               Allow rule · Deny rule · Output style · Settings scope hierarchy
+                    Dynamic workflow · ultracode
+```
+
+If you have worked through the book sequentially, these definitions should feel familiar by now. If you landed here first, **Part 0** (*What is an LLM?* and *What is Claude Code?*) is the right starting point — the model layer definitions there give every other term a foundation to stand on.

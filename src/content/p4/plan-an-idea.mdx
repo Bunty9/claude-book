@@ -1,0 +1,264 @@
+# Planning an idea — brainstorm to spec to plan
+
+Before Claude writes a line of code (or a line of anything), you and it need to agree on what "done" looks like. This chapter walks you through the three-stage funnel — brainstorm, spec, plan — that turns a vague idea into a sequence of steps Claude can execute autonomously with minimal back-and-forth.
+
+## Why the funnel matters
+
+Most failed Claude sessions do not fail because the model is incapable. They fail because the prompt was a brainstorm handed to an executor. Vague input produces exploratory output when what you wanted was decisive action.
+
+The three stages create a clean handoff:
+
+| Stage | Input | Output | Who drives |
+|---|---|---|---|
+| **Brainstorm** | A rough idea | A clarified problem statement + options | Collaborative — you and Claude |
+| **Spec** | The chosen option | Constraints, scope, acceptance criteria | Mostly you, Claude as interrogator |
+| **Plan** | The spec | Ordered, dependency-aware task list | Claude, ratified by you |
+
+Each stage consumes the output of the previous one. Skipping a stage is what causes "Claude went in the wrong direction for twenty turns."
+
+## Stage 1 — Brainstorm
+
+### What a brainstorm session is for
+
+Brainstorming with Claude is not about getting answers. It is about expanding and then collapsing the option space. You arrive with a rough signal; you leave with a single chosen path.
+
+A good brainstorm prompt names the domain, the rough goal, and any hard constraints you already know. Then it explicitly invites Claude to generate alternatives and surface assumptions:
+
+```
+I want to add a data-export feature to our CRM. Users should be able to
+download their leads. I don't know yet whether that means CSV, PDF, or
+some other format. What are the real trade-offs between approaches, and
+what am I probably not thinking about?
+```
+
+Claude will enumerate approaches, trade-offs, and hidden considerations. Your job during this phase is to eliminate options and surface non-negotiables. "PDF is too complex for now" and "CSV is fine, but we need to handle 50 000-row exports without timing out" are the outputs you want.
+
+### The clarification turn
+
+After Claude's first response, ask the narrowing question:
+
+```
+Given those trade-offs, which approach would you choose if you had to ship
+something in two days with one engineer? And what would you do differently
+if you had two weeks?
+```
+
+This forces a concrete recommendation under constraints. You are not asking Claude to decide for you — you are using it to pressure-test each option before you commit.
+
+<Callout type="tip" title="Let Claude ask you the hard questions">
+At the end of a brainstorm, try: "What questions should I be able to answer before I write a spec for this?" Claude will surface the unknowns you have not consciously named yet — dependencies on other systems, edge cases, who the actual user is, whether a simpler version already exists.
+</Callout>
+
+### When to stop brainstorming
+
+Brainstorming is over when:
+
+1. You can name the approach you are going with.
+2. You can state two or three things it will deliberately *not* do.
+3. You have identified the riskiest unknown (the one thing that could make the whole plan wrong).
+
+If you cannot answer those three questions, keep going. If you can, move to spec.
+
+## Stage 2 — Spec
+
+A spec is a written contract between you and Claude about what will be built. It does not describe implementation — it describes the result. The implementation is Claude's job; the spec is yours.
+
+### The minimum viable spec
+
+A spec does not need to be long. It needs to be complete on five questions:
+
+1. **What is the user doing?** (one sentence, present tense)
+2. **What does success look like?** (observable, testable)
+3. **What is explicitly out of scope?**
+4. **What are the hard constraints?** (performance, security, compatibility)
+5. **What does the edge-case handling look like?** (what happens when it fails or gets bad input)
+
+For the CSV export example, a spec might look like this:
+
+```
+Feature: Lead CSV export
+
+User action: Ops user clicks "Export" on the leads table and receives a
+file download in the browser.
+
+Success criteria:
+  - CSV contains all columns visible in the current filtered view
+  - Exports up to 50,000 rows without a timeout (streamed response)
+  - File is named "leads-YYYY-MM-DD.csv"
+
+Out of scope:
+  - PDF or Excel formats
+  - Scheduled / automated exports
+  - Export of custom fields (phase 2)
+
+Constraints:
+  - Must work within existing RBAC — a user only exports leads they
+    can already see (OWN / TEAM / ALL scope)
+  - No changes to the DB schema
+
+Edge cases:
+  - Empty result set → download a header-only CSV, no error
+  - Mid-export permission change → use snapshot at request time
+```
+
+### Using Claude to stress-test the spec
+
+Before treating the spec as final, ask Claude to attack it:
+
+```
+Read this spec and tell me: (a) what ambiguities would force you to make
+a judgment call mid-implementation, (b) what I have not specified that
+you would have to guess, and (c) whether the constraints are in conflict.
+```
+
+This is the most valuable prompt in the entire funnel. It surfaces the gaps that would otherwise appear as surprised behaviour mid-execution. Every ambiguity Claude names is a decision you get to make now, when it is cheap, rather than during implementation, when it is expensive.
+
+<Callout type="warning" title="Ambiguity during execution is expensive">
+An unspecified edge case discovered at implementation time costs multiple turns of context, potential backtracking, and a partially-written codebase that is now in an unknown state. An unspecified edge case discovered during spec review costs one sentence.
+</Callout>
+
+### Locking the spec
+
+Once Claude's stress-test returns no material ambiguities, the spec is locked. Write it down somewhere durable — a file in the project, a memory entry, or a comment in a ticket. The spec is the reference document for the entire plan phase and for any future session that picks up this work.
+
+<Callout type="note" title="Durable specs are context across sessions">
+A spec written to a file survives session compaction and can be referenced in future sessions with a simple `@path/to/spec.md`. A spec that exists only in the chat is lost when the context is compacted or the session ends. The research behind this book found that 65 structured memory files were maintained for a single production project, each encoding a decision or spec so future sessions did not have to re-derive them (packet E, F-08, F-34).
+</Callout>
+
+## Stage 3 — Plan
+
+With a locked spec, Claude can now write an execution plan. The plan is an ordered, dependency-aware list of tasks. Unlike the spec (which is outcome-oriented), the plan is action-oriented: each step is something Claude can do in a single, bounded session.
+
+### Asking for the plan
+
+```
+Using the spec above, write an execution plan. Break the work into tasks
+where each task:
+  - Can be completed in one focused session
+  - Has a clear "done" definition I can verify
+  - Lists the files or systems it touches
+  - Names any task it must come after
+
+Flag any task where you are unsure of the implementation approach before
+starting — those need a decision first.
+```
+
+A good plan response for the export feature might look like this:
+
+```
+Task 1 — Backend: streaming CSV endpoint
+  Done when: GET /api/v1/leads/export returns a text/csv stream,
+             respects RBAC scope, handles 50k rows without timeout
+  Touches: src/routes/leads.ts, src/services/export.service.ts
+  After: nothing (can start immediately)
+
+Task 2 — Frontend: Export button + download trigger
+  Done when: clicking Export on the leads table initiates the download
+  Touches: src/components/LeadTable.tsx, src/lib/api.ts
+  After: Task 1 (needs the endpoint to exist)
+
+Task 3 — Edge case: empty-result and permission-boundary tests
+  Done when: vitest tests cover (a) empty CSV, (b) OWN-scope user
+             cannot see TEAM-scope leads in export
+  Touches: tests/export.test.ts
+  After: Tasks 1 and 2
+```
+
+### Reviewing the plan
+
+Before executing, read the plan as if you were a different engineer looking at it cold. Ask:
+
+- Are the "done" definitions actually observable? ("The button works" is not observable; "clicking Export downloads a file named leads-YYYY-MM-DD.csv" is.)
+- Are the dependencies correct? Would any task fail if run before its predecessor?
+- Is any task too large — does it touch too many systems to be a single focused session?
+
+If you spot a task that is really two tasks, split it before Claude starts. Splitting during execution means context mid-flight.
+
+### The decision-guide
+
+Not sure which Claude mechanism to use to *execute* the plan once you have it? The widget below routes you to the right tool:
+
+<DecisionTrees />
+
+## Putting it together — the complete flow
+
+<Mermaid chart={`flowchart TD
+    A["Rough idea"] --> B["Brainstorm session\n(expand + collapse options)"]
+    B --> C{"Can name the\napproach + exclusions?"}
+    C -- "No" --> B
+    C -- "Yes" --> D["Write spec\n(5 questions)"]
+    D --> E["Claude stress-test:\nambiguities + conflicts"]
+    E --> F{"No material\nambiguities?"}
+    F -- "Gaps found" --> D
+    F -- "Yes" --> G["Save spec to disk"]
+    G --> H["Claude writes plan\n(ordered tasks)"]
+    H --> I["Review plan\ncold-eye check"]
+    I --> J{"Tasks well-scoped?"}
+    J -- "No" --> H
+    J -- "Yes" --> K["Execute"]
+
+    style A fill:var(--note),color:#fff
+    style K fill:var(--tip),color:#fff
+    style G fill:var(--accent),color:#fff
+`} />
+
+## Common failure modes (and what they signal)
+
+| Symptom | Root cause | Fix |
+|---|---|---|
+| Claude keeps asking clarifying questions mid-task | Spec had unresolved ambiguities | Go back and answer them in the spec |
+| Output is correct but not what you wanted | Brainstorm skipped; wrong option selected | Re-run brainstorm, choose differently |
+| Tasks bleed into each other | Plan dependencies wrong | Re-order plan before next session |
+| Session ends mid-task, progress lost | Task too large for one session | Split into smaller tasks; write progress to disk |
+| New session ignores previous decisions | Spec not persisted | Save spec to a file; reference it in the new session |
+
+## For engineers: plan-mode as a structural tool
+
+Claude Code has a built-in plan mode (toggle with `Shift+Tab` or `/plan`). In plan mode, file edits are never auto-approved — Claude can read and explore but cannot change anything without your explicit sign-off. This makes plan mode the natural environment for stages 1 and 2: Claude can read your codebase, understand the current state, and help you write the spec without accidentally modifying anything.
+
+The `EnterPlanMode` and `ExitPlanMode` tools give SDK users the same capability programmatically:
+
+```typescript
+// In an SDK-driven pipeline: run brainstorm + spec in plan mode,
+// then exit plan mode only when the plan is ratified.
+import { query } from '@anthropic-ai/claude-agent-sdk'
+
+for await (const msg of query({
+  prompt: 'Read the codebase and help me spec the CSV export feature.',
+  permissionMode: 'plan',   // read-only; no writes until you say so
+  maxTurns: 30,
+})) {
+  // stream output, collect the spec
+}
+// human reviews spec, then runs a second query with permissionMode: 'acceptEdits'
+```
+
+From the research behind this book: the author ran 100% of production sessions in `bypassPermissions` mode, but that was paired with a `PreToolUse` hook that blocked git commits with wrong authorship (packet E, F-03, F-05). Full autonomy plus a targeted guardrail at the irreversible side-effect. For most engineers starting out, `plan` mode during the spec phase and `acceptEdits` during execution is a more conservative — and equally effective — approach.
+
+## For automators: persisting plans across workflow steps
+
+If you run Claude Code via the Agent SDK as part of a larger automation, the plan is a natural checkpoint artifact. Write it to a file after stage 3, then pass the file path as context to the execution step:
+
+```
+# Step 1: generate spec + plan
+claude -p "Read @brief.md and produce a plan. Save it to plan.md." \
+  --output-format json > spec-result.json
+
+# Step 2: execute (separate invocation, fresh context)
+claude -p "Execute the plan in @plan.md. Start with Task 1." \
+  --permission-mode acceptEdits
+```
+
+This pattern ensures that a failed execution step does not require re-running the expensive brainstorm and spec phases. The plan file is the durable handoff between stages, and each stage can be retried independently.
+
+<Callout type="note" title="Capable models for planning, cheaper models for mechanical verification">
+The audit-remediation case study in the research behind this book used a tiered model approach: a capable model for planning and implementation, a cheaper model for mechanical gate-checking (packet E, F-14). The same principle applies to the brainstorm-spec-plan funnel: once the spec is locked and the plan is mechanical, verification sub-tasks can be delegated to lower-effort model calls without sacrificing quality.
+</Callout>
+
+## Recap
+
+The brainstorm-to-spec-to-plan funnel is a forcing function: it makes you do the hard thinking before Claude does the expensive doing. Brainstorm to collapse the option space. Spec to freeze the scope and remove ambiguity. Plan to sequence the work into sessions Claude can execute autonomously.
+
+The key habits: ask Claude to stress-test the spec before you lock it; write the spec and plan to disk so they survive session boundaries; split any task that touches more than one logical system.
+
+The next chapter covers how to *brief* a Claude session — how to hand it the plan and context it needs at the start of an execution session, so the first turn is work, not orientation.

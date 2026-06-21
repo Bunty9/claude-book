@@ -1,0 +1,224 @@
+# Subagents & the Agent tool
+
+Subagents let one Claude instance delegate bounded, focused tasks to other Claude instances — each running its own agent loop, in its own context, with its own tool permissions. This chapter explains precisely what a subagent is, how the `Agent` tool spawns one, why context isolation is the central benefit, and how to judge when delegation is worth the overhead.
+
+## What a subagent is
+
+A subagent is a complete agent loop running inside a parent agent loop. It has its own message array, its own tool set, its own turn counter, and its own context window. When it finishes, only the final `ResultMessage` — the summary text, token count, cost, and session ID — returns to the parent. None of the intermediate tool outputs, file reads, or reasoning steps cross the boundary.
+
+That last point is the entire point. The parent's context stays thin. The subagent's context can grow as deep as the task requires, then disappear. (Source: packet-A, §7)
+
+<Callout type="note" title="Subagents are not threads">
+A subagent is not a lightweight background thread. It is a full Claude model invocation — it consumes tokens, incurs cost, and runs at whatever effort level you configure. Spawning a subagent for a two-line edit is overhead, not leverage.
+</Callout>
+
+## The Agent tool
+
+The `Agent` tool is the built-in mechanism for spawning a subagent from within a running agent loop. It appears in the tool surface as a first-class peer of `Read`, `Bash`, and `Edit`. (Source: packet-A, §2)
+
+When Claude calls `Agent`, the SDK:
+
+1. Creates a new message array for the child.
+2. Injects the subagent's system prompt (its own, not the parent's).
+3. Runs the child loop — tool calls, results, turns — until no tool call is issued.
+4. Emits the child's `ResultMessage`.
+5. Returns the result text as the tool output the parent sees.
+
+From the parent's perspective, calling `Agent` looks identical to calling `Bash`: it blocks until the result is ready (for foreground agents), then the result text appears in the message array as a tool output — compact, no matter how much the child did.
+
+### Named vs forked subagents
+
+The `Agent` tool supports two modes:
+
+**Named subagents** start with a fresh context. They load their own system prompt from a subagent definition file (`.claude/agents/<name>.md` or `~/.claude/agents/<name>.md`). They know nothing of the parent's conversation unless the parent explicitly includes it in the task prompt. This is the right choice for well-defined, repeatable roles.
+
+**Forked subagents** inherit the parent's full conversation. They always run in the background, surfacing permission prompts in the parent terminal. Use forks when the task genuinely needs the accumulated context — code review against a long implementation session, for example — but be aware the child starts with a heavy context from the start. (Source: packet-A, §7)
+
+For most orchestration work, named subagents are correct. A named agent is given a specific task prompt; it does not need to know how the parent got there.
+
+## Defining a custom subagent
+
+A subagent is a Markdown file with YAML frontmatter. Place it in `.claude/agents/` (project-shared) or `~/.claude/agents/` (personal). The filename without the extension is the subagent's name.
+
+```markdown
+---
+name: typesafety-fixer
+description: Eliminates TypeScript errors in a given module scope. Receives a list of files and target error count.
+model: claude-sonnet-4-5
+tools:
+  - Read
+  - Edit
+  - Glob
+  - Grep
+  - Bash
+maxTurns: 40
+---
+
+You are a TypeScript typesafety specialist. You receive a list of source files and a target: eliminate all `tsc --noEmit` errors in those files without introducing `any`, type assertions, or non-null assertions.
+
+Work file by file. After each edit, verify with `tsc --noEmit` filtered to your scope. Stop when the error count reaches zero or when maxTurns is reached.
+```
+
+Key frontmatter fields (source: packet-A, §7):
+
+| Field | Effect |
+|---|---|
+| `model` | Which model to use; defaults to parent model |
+| `tools` | Explicit allowlist; omit to inherit all parent tools |
+| `disallowedTools` | Deny list; takes precedence over `tools` if both set |
+| `maxTurns` | Cap on tool-use round trips before the loop stops |
+| `isolation` | `worktree` (fresh git worktree) or `none` (default) |
+| `memory` | `user` to let the agent read/write user memory files |
+
+Permission behavior: foreground subagents surface permission prompts to the user. Background subagents auto-deny unapproved tool calls and continue running. If you are orchestrating unattended, pre-approve the tools the subagent needs in your allow rules — otherwise a permission prompt will block the entire pipeline.
+
+## Context isolation in practice
+
+The reason to delegate to subagents is not just parallelism — it is context hygiene. Consider a codebase sweep to fix 386 TypeScript errors across dozens of files.
+
+Without subagents, the parent agent reads file after file, accumulates tool outputs, and eventually either hits context limits or starts degrading because the early reads are too far from attention peaks. The entire sweep lives in one growing window.
+
+With subagents, the parent partitions the files into disjoint scopes, dispatches one agent per scope, and waits. Each agent runs deep in its own window — reading, editing, verifying — then returns a one-paragraph summary. The parent's window gains one tool output per subagent, regardless of how many turns the subagent took.
+
+This structure was used in a real typesafety campaign: three parallel subagents dispatched over disjoint file scopes (leads/auth/jobs, settings/ops/directory, and remaining modules), each building deep context in its own window, reducing 238 errors to zero. The parent context accumulated three result summaries. (Source: packet-E, F-15)
+
+<AgentOrchestrationVisualizer />
+
+The visualizer above shows how parallel subagent lanes compress wall-clock time while keeping the orchestrator's cost and context minimal. Switch presets to see different pipeline shapes — a sequential audit pipeline, a parallel sweep, a verifier stage that runs after all workers complete.
+
+## When to delegate — and when not to
+
+The `Agent` tool has real overhead: a fresh model invocation, token cost for the child's turns, and the serialization latency of waiting for a result. Delegation pays off when the savings outweigh those costs.
+
+<Mermaid chart={`
+graph TD
+    Q{"Is the task<br/>self-contained?"}
+    Q -- "No — deeply interleaved<br/>with parent context" --> DONT["Keep in parent loop"]
+    Q -- "Yes" --> Q2{"Does it risk bloating<br/>the parent window?"}
+    Q2 -- "No — small, fast" --> DONT
+    Q2 -- "Yes — many reads,<br/>many turns" --> Q3{"Can it run on a<br/>disjoint file set?"}
+    Q3 -- "No — shared files<br/>→ conflict risk" --> WARN["Serialize, don't parallelize"]
+    Q3 -- "Yes" --> DELEGATE["Delegate to subagent"]
+
+    style DONT fill:var(--note-subtle),color:var(--fg)
+    style WARN fill:var(--warning-subtle),color:var(--fg)
+    style DELEGATE fill:var(--tip-subtle),color:var(--fg)
+`} />
+
+**Delegate when:**
+
+- The task is self-contained and the result can be expressed as a summary.
+- The task involves many reads and writes that would bloat the parent context.
+- Multiple such tasks are independent and can run in parallel.
+- You want a specialized system prompt for a role (reviewer, verifier, planner) without polluting the parent's prompt.
+
+**Keep in the parent loop when:**
+
+- The task needs tight, turn-by-turn integration with the parent's reasoning.
+- The task is small (a single file edit, a two-command diagnostic).
+- The output of the task drives the parent's next decision in a way that requires the intermediate steps, not just a summary.
+
+A useful heuristic: if you can describe the task in one sentence and the result in one paragraph, it is a candidate for delegation. If you cannot describe it without referencing intermediate state the parent holds, keep it in-process.
+
+## Built-in subagents
+
+Claude Code ships five built-in subagents that the runtime uses automatically. You do not need to define them; they are available by name in every session. (Source: packet-A, §7)
+
+| Name | Model | Purpose | Skips CLAUDE.md? |
+|---|---|---|---|
+| `Explore` | Haiku | Read-only fast codebase search | Yes |
+| `Plan` | Inherits parent | Research phase for plan mode | Yes |
+| `general-purpose` | Inherits parent | All tools, no special role | No |
+| `statusline-setup` | Sonnet | Configures the `/statusline` command | No |
+| `claude-code-guide` | Haiku | Answers Claude Code feature questions | No |
+
+`Explore` and `Plan` skip `CLAUDE.md` and git status by design — they are optimized for speed, and the extra context would slow them down without benefiting the read-only research they do.
+
+In the SDK, you can suppress all built-ins by setting `CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS=1`. This is useful when embedding Claude Code in an application where you want full control over the available subagent roster.
+
+## Orchestration patterns
+
+The three most common patterns in practice:
+
+### Fan-out / fan-in
+
+The parent breaks a large task into N independent chunks, dispatches one subagent per chunk in parallel, then aggregates the results. Works well for sweeps, audits, and generation tasks where the chunks do not share files.
+
+```
+Parent
+├── Agent("Fix TS errors in src/leads/**")  ─┐
+├── Agent("Fix TS errors in src/auth/**")   ─┤ parallel
+└── Agent("Fix TS errors in src/ops/**")    ─┘
+    ↓ three compact summaries
+Aggregate: confirm 0 errors remain
+```
+
+### Pipeline
+
+The output of one subagent becomes the input to the next. Each stage receives only a summary of the previous stage's work, keeping each agent's input compact.
+
+```
+Planner → [scope document]
+    → Implementer → [patch summary]
+        → Verifier → [gate pass/fail]
+            → Fixer (if fail) → [fix summary]
+```
+
+This pattern was used for a 123-finding audit remediation: a Sonnet planner re-verified findings on the live branch, a Sonnet implementer ran TDD per batch, a Haiku verifier checked gates mechanically (cheap model for a mechanical task), and an adversarial reviewer fed issues to a Sonnet fixer. Seven domain batches, ten PRs, two days. (Source: packet-E, F-14)
+
+### Parallel with dependency ordering
+
+Some tasks have partial ordering. Group A must finish before Group B reads the output. Within each group, tasks are independent. The parent can dispatch Group A in parallel, await all results, then dispatch Group B in parallel — without the subagents needing to coordinate with each other at all.
+
+<Callout type="warning" title="Never parallelize agents on shared files">
+Two subagents editing the same file simultaneously will produce conflicts. The disjoint-file constraint is not advisory — it is the prerequisite for safe parallel dispatch. Before dispatching N agents in parallel, verify their file scopes do not overlap. A pre-dispatch scope check is worth including in the orchestrator prompt.
+</Callout>
+
+## Worktrees and subagent isolation
+
+For tasks that mutate the filesystem — editing source files, running builds, applying migrations — the `isolation: worktree` frontmatter field instructs the runtime to create a fresh git worktree for the subagent. The subagent makes its changes in that worktree; the parent decides whether to merge them.
+
+Worktree isolation is the correct choice when:
+- Subagents in a parallel group might otherwise have write conflicts even on different files (e.g., generated files, lock files, build artifacts).
+- You want the parent to review and approve diffs before they land on the working branch.
+- A subagent's task might need to be abandoned without polluting the parent's working tree.
+
+Without worktree isolation, parallel agents that happen to touch shared files (lock files, generated types, index files) can produce conflicts that are harder to resolve than just running them serially.
+
+## Hooks for subagent lifecycle
+
+Two hook events fire around subagent execution. (Source: packet-A, §5)
+
+- `SubagentStart` — fires when a subagent is being spawned. Not blockable. Useful for logging, metrics, or setting up monitoring.
+- `SubagentStop` — fires when a subagent completes. Blockable (exit 2). Useful for validation gates: inspect the result, block if the output fails a quality check, forcing the parent to retry or escalate.
+
+A `SubagentStop` hook that validates the result before it returns to the parent is a lightweight way to build a quality gate into the orchestration structure without requiring the parent to parse and evaluate every subagent output manually.
+
+## Putting it together: a minimal orchestration
+
+Below is the shape of a parent prompt that uses subagents responsibly. The specifics depend on your task; the structure is the pattern.
+
+```
+You are orchestrating a codebase-wide fix. Your job is to:
+
+1. Read src/index.ts to understand the module structure.
+2. Partition the modules into three groups with no shared files.
+3. Dispatch an Agent("typesafety-fixer") for each group in parallel,
+   passing the file list and the target (0 tsc errors).
+4. Collect the three summaries. Run `tsc --noEmit` to verify.
+5. If errors remain, identify which group owns the remaining files
+   and dispatch a follow-up agent for that scope only.
+6. Report final error count and a one-paragraph summary.
+```
+
+The parent reads one file, dispatches three agents, verifies, dispatches at most one follow-up, and reports. Its context accumulates one file read plus four tool outputs maximum. The agents do the heavy lifting in their own windows.
+
+## Recap
+
+Subagents are complete agent loops that run inside a parent loop. The `Agent` tool spawns them; the SDK takes care of the child loop's lifecycle and returns only the final summary to the parent. Context isolation — not just parallelism — is the core value: subagents can read and write deeply without filling the parent's window.
+
+Named subagents are defined in Markdown files with YAML frontmatter, giving each agent a role, a model, a tool set, and turn limits. The built-in agents (`Explore`, `Plan`, and others) handle common patterns automatically. Custom agents handle your domain-specific roles.
+
+Delegate when a task is self-contained, potentially long, and operates on a disjoint file set. Keep in the parent loop when a task is small, tightly coupled to intermediate state, or shares files with other concurrent tasks. The decision tree above is the practical guide.
+
+The next chapter covers dynamic workflows — JavaScript scripts that move orchestration logic entirely out of Claude's context window, enabling coordination of hundreds of agents at a scale where even a thin parent context would become unwieldy.

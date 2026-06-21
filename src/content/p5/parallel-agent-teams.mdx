@@ -1,0 +1,183 @@
+# Parallel agent teams
+
+Fan-out orchestration — running multiple agents simultaneously on different slices of a problem — is one of the highest-leverage techniques available in Claude Code. This chapter gives you a precise mental model for when parallelism wins, when it backfires, and how to design the coordination layer that makes it reliable.
+
+## The core intuition: wall-clock time vs. serial time
+
+Every task has two costs: the time to complete it serially, and the wall-clock time when work runs in parallel. For purely sequential work, these are equal. For independent work, wall-clock time collapses to the duration of the longest single task.
+
+The gain only materialises when tasks are genuinely independent. Independence means: no shared files, no ordering constraints, no shared mutable state. Break that and you do not get concurrency — you get a race condition that silently corrupts output.
+
+<AgentOrchestrationVisualizer />
+
+The visualizer above shows three presets. The speedup column illustrates the point: a typesafety sweep over disjoint file groups runs several times faster in parallel than in series; a tightly coupled pipeline that requires each stage's output gains almost nothing.
+
+## When fan-out wins
+
+Parallelism pays off reliably in a small set of patterns.
+
+### Disjoint file scopes
+
+The most common and safest use. Divide the codebase into non-overlapping groups — for example, `leads+auth+jobs` in one agent, `settings+ops+directory` in a second, `analytics+notifications` in a third — and dispatch all three simultaneously. Each agent reads and writes only its own files. No merge conflict is possible because the scopes never touch. The typesafety campaign described in packet E (F-15) used exactly this shape: a sequential foundation phase reduced 386 TypeScript errors to 238, then three parallel agents on disjoint module groups eliminated the remaining 238 in a fraction of the serial time.
+
+### Audit and review passes
+
+Code review is embarrassingly parallel: each reviewer reads the same static diff and produces an independent judgment. An 8-agent review pass over a large RBAC implementation (packet E, F-16) caught 7 critical and 11 high-severity issues before merge, including a synchronous JWT verification call inside an async handler that was crashing the production process on a predictable interval. No single reviewer saw all of them; the ensemble did.
+
+### Multi-domain batch processing
+
+When you have a list of fixed, independent units — 123 security findings, 42 API endpoints, 7 PDF template families — you can partition the list and process each partition in a dedicated agent lane. The audit remediation case study (packet E, F-14) used a 5-stage pipeline across 7 domain batches: planner, TDD implementer, verifier, adversarial reviewer, fixer. The batches ran in sequence (because each shared the same database), but within each batch the 5-stage pipeline was structured so that the cheapest-appropriate model handled each stage — Haiku for mechanical verification, Sonnet for implementation and planning.
+
+### Research fan-out
+
+When a question has multiple independent sub-questions — "what does the payment library do?", "what does the auth module do?", "what do the webhook routes do?" — dispatch one agent per question. Each explores freely without interfering with the others. The `/deep-research` bundled workflow uses this structure internally: it fans out web searches, fetches sources, adversarially cross-checks claims, and synthesises a cited report (packet A, section 6).
+
+## When fan-out hurts
+
+Parallelism has failure modes that are worse than slowness — they are silent.
+
+### Shared file writes
+
+If two agents edit the same file, the second write wins and the first is lost, or the changes interleave in incoherent ways. This is not a theoretical risk; it is the most common mistake in parallel agent work. The fix is simple — scope agents to disjoint files — but it requires discipline at dispatch time.
+
+<Callout type="danger" title="Shared files are a silent corruption risk">
+Two agents writing to the same file do not raise an error. The second write silently overwrites the first. Always define non-overlapping file scopes before dispatching parallel agents, and verify at design time, not after the fact.
+</Callout>
+
+### Ordering dependencies
+
+Some work is inherently sequential. A schema migration must complete before the application code that uses the new columns can be tested. An authentication fix must land before a dependent feature that relies on the corrected token structure. Forcing these into parallel lanes produces builds that fail at integration, often in ways that are time-consuming to untangle.
+
+The heuristic: if task B requires the output of task A as input, they are sequential. If both tasks only require the original codebase as input and produce independent outputs, they are parallel candidates.
+
+### Resource contention on the host
+
+Running many agents simultaneously places real demands on the host machine: CPU for model inference (if using local infrastructure), disk I/O for file reads and writes, and memory for each agent's context. The Claude Code workflow runtime caps concurrent agents at 16 on capable hardware and fewer on constrained machines (packet A, section 10). In practice, the SOP documented in the primary project limits parallel dispatches to approximately 5 agents to avoid host resource pressure (packet E, F-18). Beyond that number, queue depth grows and agents begin waiting rather than running.
+
+### Context cost of coordination
+
+Each agent carries its own context window: its system prompt, its task description, the CLAUDE.md content it loads, and every tool call it makes. Spawning 10 agents where 3 would do wastes tokens, extends wall-clock time (more agents means more total work), and makes the orchestrating session harder to reason about. Fan-out is a precision instrument, not a reflex.
+
+## Designing the coordination layer
+
+The hard part of parallel teams is not running them — the `Agent` tool handles that. The hard part is designing the boundaries cleanly enough that independent execution is actually safe.
+
+### Partitioning strategies
+
+<Mermaid chart={`graph TD
+    task["Task to parallelise"]
+    task --> files["By file scope<br/>(most common)"]
+    task --> domain["By domain/module<br/>(for audits, migrations)"]
+    task --> list["By input list<br/>(batch processing)"]
+    task --> question["By sub-question<br/>(research fan-out)"]
+
+    files --> check1["Verify: zero file overlap?"]
+    domain --> check2["Verify: no cross-domain writes?"]
+    list --> check3["Verify: no shared mutable state?"]
+    question --> check4["Verify: each answer is independent?"]
+
+    check1 --> safe["Safe to fan out"]
+    check2 --> safe
+    check3 --> safe
+    check4 --> safe
+
+    style safe fill:var(--tip-subtle),color:var(--fg)
+    style task fill:var(--bg-elevated),color:var(--fg)
+`} />
+
+For file-scope partitioning specifically: list all files in scope, group them, and confirm that no file appears in more than one group. This is worth doing explicitly, not by feel. A module that imports from another module does not prevent parallelism — what matters is which files get written, not which files get read.
+
+### Worktrees as isolation units
+
+Each parallel agent should operate in its own git worktree. A worktree is a separate physical directory rooted on the same repository, checked out to its own branch. Agents editing different worktrees cannot interfere even if their file-scope analysis was imperfect, because the files are physically separate.
+
+In the primary project described in packet E (F-10), every feature branch lives in its own worktree directory, created via a script that always bases on `origin/dev`. This is not just an organisation preference — it is the structural guarantee that makes parallel session isolation reliable. The stale-base incident (F-12) illustrates the failure mode: a worktree created from a branch 329 commits behind the target effectively clobbered months of shipped work. The script enforces the correct base on every creation.
+
+<Callout type="tip" title="One worktree per parallel agent, always based on the shared integration branch">
+Worktrees prevent file conflicts even when scope analysis misses an overlap. The cost is disk space and setup time; the benefit is a hard isolation guarantee. The `Agent` tool's `isolation: worktree` frontmatter field automates this for named subagents (packet A, section 7).
+</Callout>
+
+### The merge sequence
+
+Parallel agents produce parallel branches. Merging them is a sequential operation, and the order matters:
+
+1. Each agent's branch should be reviewed independently — the output of one agent is not a precondition for reviewing another.
+2. Merge to the integration branch in an order that respects any soft dependencies (e.g., if agent A adds a utility function that agent B uses, merge A first).
+3. Run the full test and typecheck suite after each merge, not only after all merges. Catching an integration issue at merge 2 is cheaper than untangling it at merge 5.
+
+### Model tier selection per stage
+
+Not every agent in a pipeline needs the same model. The audit pipeline case study (F-14) was explicit about this: the cheapest model appropriate to the task handled each stage. Mechanical verification — "does the test count match? does the diff cover the finding?" — is a pattern-matching problem that a smaller, faster model handles well. Planning and implementation require more reasoning. Assigning a slower, more capable model to a mechanical gate slows the pipeline without improving its output; assigning a weaker model to a nuanced implementation task produces subtle errors that are expensive to find later.
+
+A practical tier assignment for a typical quality pipeline:
+
+```
+Planner (task decomposition)          → Sonnet or Opus
+Implementer (writes code + tests)     → Sonnet
+Mechanical verifier (gate check)      → Haiku
+Adversarial reviewer (finds issues)   → Sonnet
+Fixer (addresses review findings)     → Sonnet
+```
+
+This tiering is not a rule — it is a starting point. Adjust based on how much reasoning each stage actually needs.
+
+## The orchestrator's responsibilities
+
+The session that dispatches parallel agents is the orchestrator. Its job is not to do the work — it is to design the partition, dispatch the agents, collect their results, and handle failures.
+
+The orchestrator should:
+
+- Define scope boundaries explicitly before any agent starts
+- Ensure each agent prompt includes the project CLAUDE.md reference and the specific scope it owns
+- Monitor for agent failure and decide whether to retry, skip, or escalate
+- Merge results in the correct order
+- Run integration gates after each merge
+
+The orchestrator should not:
+
+- Re-do work that agents are doing
+- Dispatch more agents than the host can run concurrently without queuing
+- Leave scope boundaries ambiguous and hope agents will work it out
+
+The `Workflow` tool handles the orchestrator role mechanically when the task is well-defined enough to script: it moves the orchestration logic into code, keeps intermediate results in script variables rather than the context window, and runs up to 16 concurrent agents without occupying the main session (packet A, section 10). For complex multi-repo work where the partition logic itself requires judgment, the orchestrator is Claude in the main session working interactively.
+
+## A practical example: the typesafety sweep
+
+The typesafety campaign (packet E, F-15) is worth walking through as a concrete template.
+
+**Sequential foundation phase (P1, P2):** Before any parallelism, a single agent established the tsconfig flags, introduced type-guard utilities and branded ID types, and ran a first mechanical pass that reduced the error count from 386 to 238. This was sequential because the foundation phase produced types and utilities that the parallel agents would depend on.
+
+**Parallel sweep phase (P3):** With the foundation stable, three agents ran simultaneously on disjoint module groups:
+- Agent A: `leads`, `auth`, `jobs`
+- Agent B: `settings`, `ops`, `directory`, `tc-bookings`, `users`
+- Agent C: the remaining modules
+
+No agent could write a file owned by another agent. All three ran to completion and produced branches that merged cleanly. The error count went from 238 to 0.
+
+**Sequential gate phases (P4, P5):** ESLint with type-checking, then smoke-gate hardening and a git hook that prevents future regressions — both sequential because each built on the previous result.
+
+The total wall-clock time was a fraction of what a purely sequential pass would have required. The P3 phase, which represented most of the mechanical work, ran in parallel without any integration issues because the partition was designed correctly.
+
+## What breaks and how to catch it
+
+Even well-designed parallel runs produce integration problems. The most common:
+
+**False independence:** Two agents both needed to update a shared constants file. One wins; the other's change is silently dropped. Detection: diff each agent's output against the baseline before merging; look for changes to shared files.
+
+**Stale base:** An agent based its worktree on a branch that was already stale when it started, missing changes that affect its scope. Detection: always base worktrees on the same integration branch and verify the base SHA at dispatch time.
+
+**Cascading type errors:** Agent A changes a type in a shared interface; Agent B, running concurrently, uses the old type and generates code that will fail to compile after A's changes are merged. Detection: run the full typecheck suite after each merge, not just after the last one.
+
+**Assumption drift:** Each agent receives the task description as it was at dispatch time. If one agent's work changes the assumptions that another agent's plan depends on, the second agent produces output that is correct for the world as it was at dispatch, not the world as it is at merge time. Detection: in the review pass, check whether the post-merge codebase still matches what each agent assumed.
+
+<Callout type="warning" title="The integration suite is not optional">
+Parallel agents produce correct output for their own scope. They do not guarantee that their outputs compose correctly. The full test and typecheck suite run after each merge is the actual correctness gate — skipping it trades short-term speed for delayed, harder-to-diagnose failures.
+</Callout>
+
+## Recap
+
+Fan-out across parallel agents wins decisively when tasks are independent — disjoint file scopes, independent audit passes, or partitioned batch inputs. It fails silently when tasks share mutable state, have hidden ordering dependencies, or when the host lacks the resources to run the requested concurrency.
+
+The coordination layer matters as much as the parallelism itself: clear scope partitions, worktree isolation per agent, the right model tier for each stage, and a sequential merge sequence with integration gates after each step. The typesafety and audit case studies in this book's research packets both demonstrate the pattern at scale — hundreds of errors and findings addressed in days rather than weeks, with quality that exceeded what any single-agent pass would have produced.
+
+The next chapter looks at how to design the prompts and task descriptions that give individual agents — parallel or serial — enough context to work reliably without constant supervision.

@@ -1,0 +1,228 @@
+# Building a personal automation system
+
+You have individual automations — a scheduled digest here, a webhook there, a Claude skill you invoke manually. This chapter shows how to wire those pieces into a coherent whole: a tiered, resilient, self-monitoring system that runs unattended and grows with you without becoming a maintenance burden.
+
+---
+
+## Why a system, not a collection
+
+A collection of workflows breaks down at two predictable points: when one workflow's output needs to feed another, and when something fails silently. A system prevents both by applying three ideas from the start.
+
+**Layered triggers.** Some things should run on a schedule (morning brief, weekly reports). Some should fire on events (new email, Drive file uploaded). Some should respond to your commands in real time (ad-hoc Claude + Zapier MCP calls). A system has all three layers, and each layer has its own tool choice.
+
+**Shared data surface.** Isolated workflows can't cooperate. A Google Sheet, a Notion database, or even a simple JSON file that every workflow can read and write turns a collection into a network. One workflow writes status; another reads it to decide whether to proceed.
+
+**Explicit error paths.** Automation does not fix broken processes — it scales them.[^eca] Before adding a workflow, verify that the underlying process is clear. Once it runs, route failures somewhere visible or the system lies to you through silence.
+
+[^eca]: Source: "If the underlying workflow lacks clarity or efficiency, automation will simply scale those limitations." — Synergy Online, *Process Automation Best Practices*, https://www.synergyonline.com/post/process-automation-best-practices-driving-business-efficiency-and-growth
+
+---
+
+## The three-tier architecture
+
+<Mermaid chart={`graph TD
+    subgraph Tier1["Tier 1 — Scheduled (n8n)"]
+        S1[Morning brief\n06:00 daily]
+        S2[Email digest\n08:00 daily]
+        S3[Weekly report\nMonday 07:00]
+    end
+
+    subgraph Tier2["Tier 2 — Event-driven (n8n webhooks / Drive / Gmail triggers)"]
+        E1[New Drive file → process + log]
+        E2[Labeled Gmail → Calendar event]
+        E3[Sheet row added → notify]
+    end
+
+    subgraph Tier3["Tier 3 — On-demand (Claude + Zapier MCP)"]
+        D1[Ad-hoc research]
+        D2[Send message / update CRM]
+        D3[Draft + schedule content]
+    end
+
+    SharedSheet[(Google Sheet\nshared state)]
+
+    S1 --> SharedSheet
+    S2 --> SharedSheet
+    E1 --> SharedSheet
+    E3 -.->|reads| SharedSheet
+    D1 -.->|reads| SharedSheet
+
+    subgraph ErrorPath["Error layer"]
+        EW[n8n Error Workflow\nSlack alert + dead-letter log]
+    end
+
+    Tier1 -->|on failure| EW
+    Tier2 -->|on failure| EW
+`} />
+
+### Tier 1 — Scheduled workflows
+
+n8n's Schedule Trigger node handles time-based work. It supports cron expressions (`30 8 * * 1-5` = weekdays at 8:30 AM), plain intervals, and human-friendly modes (daily, weekly, monthly).[^sched] The workflow toggle must be on for the trigger to fire — inactive workflows silently skip their schedule.
+
+A practical starting stack:
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| Morning brief | `0 6 * * *` | Calendar events + Todoist tasks → GPT/Claude summary → Gmail HTML |
+| Email digest | `0 8 * * *` | Gmail inbox → AI summarize → delivery to your read-later inbox |
+| Weekly report | `0 7 * * 1` | Pull Sheet metrics → format → send to yourself |
+
+[^sched]: n8n Schedule Trigger docs: https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.scheduletrigger/
+
+<Callout type="warning" title="Self-hosted n8n misses scheduled runs when the server is down">
+If you run n8n on a home server (Raspberry Pi 4 or similar), a reboot or power cut means scheduled jobs that fire during the downtime are silently skipped — they do not catch up. Cloud-hosted n8n avoids this. If you self-host, a simple uptime monitor (UptimeRobot free tier, a cron that pings a health endpoint) gives you visibility into gaps before they compound.[^selfhost]
+</Callout>
+
+[^selfhost]: Source: https://aiworkflowsautomation.com/n8n-scheduling-tutorial-master-cron-jobs-triggers-in-workflow-automation/
+
+### Tier 2 — Event-driven workflows
+
+Webhooks and trigger nodes handle real-time events:
+
+- **Gmail Trigger** polls for messages matching a label or filter on a configurable interval and fires when one arrives.
+- **Google Drive Trigger** fires on File Created, File Updated, or Folder Created events.
+- **Google Sheets Trigger** fires when rows are added or changed — useful for data-entry-driven pipelines.
+- **Webhook Trigger** gives any external service a URL to POST to; the workflow fires instantly with the incoming payload.
+
+A concrete example: Gmail receives a message you label "meeting-request". The trigger fires, a Google Gemini or Claude node extracts the proposed time and attendees, and a Calendar node creates the event — all without you opening a tab.[^cal] n8n community template #7340 demonstrates this exact flow.
+
+[^cal]: n8n workflow #7340: https://n8n.io/workflows/7340-create-google-calendar-events-from-labeled-gmail-emails-with-google-gemini-ai/
+
+### Tier 3 — On-demand via Zapier MCP
+
+Scheduled and event-driven tiers handle known patterns. For everything else — "pull the Zendesk ticket, check Stripe, draft a reply, send it" — Zapier MCP gives Claude real-time hands across 9,000+ apps.[^zmcp]
+
+The mental model: Zaps are scheduled automation; MCP calls are what your AI does when you ask it to take action right now. The two are complementary.[^zcomp]
+
+Setup takes under five minutes:
+1. Go to `mcp.zapier.com`, create a server, copy the server URL.
+2. Paste it into Claude Code's MCP settings (or your `settings.json`).
+3. Search and add the actions you want (Gmail Send, HubSpot Contact Create, Notion Page Update, etc.).
+4. In Claude Code, Zapier actions appear as `mcp__Zapier-MCP__<action>`.
+
+Each tool call costs two tasks from your Zapier quota.[^ztasks] On a free Zapier plan (100 tasks/month) that means roughly 50 MCP calls. On a Professional plan the ceiling is much higher. Keep this in mind when deciding which tier handles a repetitive action: if the same action runs daily on a fixed schedule, a Zap is more quota-efficient than a daily MCP call from Claude.
+
+[^zmcp]: Source: https://zapier.com/mcp
+[^zcomp]: "Think of Zaps as scheduled automation and MCP as giving your AI hands." — Zapier MCP guide, https://zapier.com/blog/zapier-mcp-guide/
+[^ztasks]: Source: https://www.goodcall.com/voice-ai/zapier-mcp
+
+<Callout type="danger" title="Your Zapier MCP server URL is effectively a password">
+Anyone who has the server URL can call every action you have connected, authenticated as you. Do not paste it into chat, commit it to source control, or share it publicly. If it leaks, regenerate it immediately from the Connect tab in the Zapier MCP dashboard.[^zsec]
+</Callout>
+
+[^zsec]: Source: https://www.goodcall.com/voice-ai/zapier-mcp
+
+---
+
+## Building with sub-workflows: the function pattern
+
+As your system grows past five or six workflows, repeated logic starts appearing in multiple places — the same Slack notification, the same Sheet append, the same error formatting. Copy-paste breaks down the moment you need to change the format.
+
+n8n sub-workflows solve this the same way functions solve it in code. A parent workflow calls the sub-workflow via an Execute Workflow node; the sub-workflow does its work and returns output to the parent.[^subwf] Change the sub-workflow once, and every caller picks up the change.
+
+```
+Parent: "Morning Brief"
+  └─→ Execute Workflow: "fetch-and-summarize-emails"
+  └─→ Execute Workflow: "fetch-calendar-events"
+  └─→ Execute Workflow: "send-formatted-brief"
+
+Parent: "Weekly Report"
+  └─→ Execute Workflow: "fetch-and-summarize-emails"   ← same sub-workflow
+  └─→ Execute Workflow: "build-weekly-metrics"
+  └─→ Execute Workflow: "send-formatted-brief"          ← same sub-workflow
+```
+
+Sub-workflows also prevent out-of-memory failures on large batch jobs. n8n releases a sub-workflow's memory after it completes; processing large datasets inside a monolithic workflow risks OOM errors that would not appear in smaller test runs.[^oom]
+
+[^subwf]: n8n sub-workflow docs: https://docs.n8n.io/flow-logic/subworkflows/
+[^oom]: Source: https://ryanandmattdatascience.com/n8n-execute-sub-workflow-trigger-node/
+
+---
+
+## Error handling: make failures loud
+
+A silent failure is worse than a loud one because it erodes trust in the system without giving you information to fix anything.
+
+The minimum viable error layer:
+
+1. **Set an Error Workflow in every workflow's settings.** n8n's Error Trigger node fires automatically when any workflow in the instance fails, receiving the failed payload and error context.[^errwf]
+2. **Route to two places:** a Slack (or email) alert for immediate visibility, and a Sheet or database row for a searchable log.
+3. **Distinguish transient from persistent failures before retrying.** Timeouts and HTTP 429s warrant exponential backoff (1 s → 2 s → 4 s → 8 s) with a small random jitter to prevent thundering-herd effects on retries. Bad data, missing field mappings, and permission errors will not succeed on retry — route them to the dead-letter log instead.[^retry]
+
+```
+[Any Workflow Failure]
+       │
+       ▼
+Error Trigger node
+       │
+       ├─→ IF transient (429, timeout, 5xx)
+       │      └─→ Wait + retry (exponential backoff)
+       │
+       └─→ ELSE persistent (bad data, 403, schema mismatch)
+              ├─→ Append to "Errors" Sheet (timestamp, workflow, payload)
+              └─→ Slack alert: "#automation-errors"
+```
+
+[^errwf]: n8n error handling docs: https://docs.n8n.io/flow-logic/error-handling/
+[^retry]: Source: https://www.pagelines.com/blog/n8n-error-handling-patterns and https://n8nlab.io/blog/n8n-error-handling-best-practices
+
+---
+
+## Naming and maintainability discipline
+
+You will not remember what "Workflow 7" does in six months. Naming conventions are the cheapest form of documentation in an automation system.
+
+A workable pattern: `[Scope] [Action] — [Schedule/Trigger]`
+
+| Bad | Better |
+|---|---|
+| Workflow 1 | Daily Brief — 06:00 |
+| Email automation | Gmail Triage — on-label |
+| Report thing | Weekly Metrics Report — Monday 07:00 |
+
+Two other habits that pay forward:
+- **Disable, don't delete,** workflows you are not sure you need. Deletion loses the configuration; disabling preserves it and stops execution.
+- **Prevent overlapping executions** on long-running scheduled workflows. If a workflow takes 4 minutes to run and fires every 3 minutes, executions stack up. n8n's concurrency settings or an idempotency guard (check a flag in your Sheet before proceeding) prevent the pile-up.[^overlap]
+
+[^overlap]: Source: https://aiworkflowsautomation.com/n8n-scheduling-tutorial-master-cron-jobs-triggers-in-workflow-automation/
+
+---
+
+## Integrating Claude Code into the system
+
+Claude Code sits at the center of Tier 3, but it also reaches into the other tiers through MCP and skills.
+
+**Memory as the context backbone.** The most durable pattern for working with an AI across sessions is automated session memory: a PostToolUse hook extracts what happened, writes compact bullet summaries to a dated log, and injects the relevant portions at the next session start. The result is continuity across sessions without manual curation. (For more on hook pipelines, see the hooks chapter in Part 6.)
+
+**Goal-delegation over instruction-delegation.** The more standing context you maintain — in `CLAUDE.md`, in architecture docs, in memory files — the shorter your prompts can be. "Fix the prod bug in the lead assignment flow" works when Claude already knows what the lead assignment flow is and where it lives. This is not laziness; it is the right allocation of effort. Invest once in the standing document; reap it on every task.
+
+**Short prompts as the interface.** Prompts like "run audit and fix all findings" or "full pipeline deploy pr" are realistic targets once a system is established. They work because the CLAUDE.md carries the structural knowledge, skills carry the procedural steps, and hooks enforce the invariants — leaving the prompt to convey only the intent.
+
+<Callout type="tip" title="Use cheap models for mechanical verification steps">
+In a multi-stage pipeline (planner → implementer → verifier → reviewer), the verifier's job is mechanical: did the tests pass, does the diff cover the stated scope, are the type errors gone? That is a smaller, cheaper model's job. Reserve the stronger model for the planning and implementation stages where judgment matters. The cost difference is significant at volume.
+</Callout>
+
+---
+
+## Putting it together: a worked assembly sequence
+
+Rather than designing the full system upfront, build it in three phases. Each phase delivers value immediately and creates the foundation for the next.
+
+**Phase 1 — Daily cadence (week 1)**
+Start with one scheduled workflow you will actually notice: a morning brief that pulls your calendar events and a summary of overnight email. Validate that it runs reliably for a week before adding anything else. The habit of checking it is as important as the workflow itself.
+
+**Phase 2 — Event layer (week 2–3)**
+Add two or three event-driven workflows for the highest-friction manual handoffs in your day. Good candidates: an email label that creates a Calendar event, a Drive upload that logs metadata to a Sheet, a Sheet row that triggers a Slack notification. Extract shared logic (Sheet appends, Slack sends) into sub-workflows as it appears.
+
+**Phase 3 — On-demand AI actions (week 4+)**
+Configure Zapier MCP and connect it to Claude Code. Start with three to five actions — the ones where you currently switch between four tabs to do something repetitive. Verify that each MCP call does what you expect before adding more. Set a Zap for any action that becomes a daily pattern; keep MCP for the irregular and ad-hoc.
+
+---
+
+## Recap
+
+A personal automation system has three tiers: scheduled workflows for time-based work (n8n Schedule Trigger), event-driven workflows for real-time reactions (n8n webhooks and GSuite triggers), and on-demand AI actions for irregular tasks (Claude + Zapier MCP). Sub-workflows act as functions — extract repeated logic once and update it in one place. A shared data surface (a Sheet, a database table) lets tiers cooperate. An explicit error layer (Error Workflow → alert + dead-letter log) keeps failures visible. And a CLAUDE.md plus session memory system keeps your AI context coherent across sessions without manual maintenance.
+
+Build in phases: daily cadence first, event layer second, on-demand AI actions third. Let each phase run long enough to prove its reliability before adding the next.
+
+**Next:** The following chapter looks at advanced agentic patterns — parallel sub-agent dispatch, human-in-the-loop gates, and multi-model pipelines — for when a single workflow or session is no longer sufficient.

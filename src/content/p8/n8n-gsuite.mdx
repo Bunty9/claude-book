@@ -1,0 +1,260 @@
+# n8n + GSuite patterns
+
+n8n's visual workflow builder and Google Workspace's deep API surface are a natural fit: every Gmail message, Drive file, Sheets row, and Calendar event becomes a trigger or action you can orchestrate in minutes. By the end of this chapter you will know how to authenticate all four Google services in n8n, how to wire Claude into each of them, and how to assemble those pieces into durable multi-service automations.
+
+---
+
+## How Google auth works in n8n
+
+Before touching any workflow, get credentials right — everything downstream depends on it.
+
+n8n offers three credential types for Google services:
+
+| Credential type | Best for | Shared across nodes? |
+|---|---|---|
+| **Google OAuth2** (single service) | Personal Gmail, Drive, Sheets, Calendar | One credential per product |
+| **Google OAuth2** (generic) | Broad-scope access when one cred covers several products | Yes |
+| **Service Account** | Server-to-server, no human login | Yes, but with a sharp constraint (below) |
+
+For most automators, the OAuth2 route is the right call. You create an OAuth2 credential in n8n, paste in the Client ID and Secret from a Google Cloud project you own, and complete the consent flow once. n8n stores the token encrypted under your `N8N_ENCRYPTION_KEY` and refreshes it automatically.
+
+<Callout type="warning" title="Service Accounts lost My Drive access in April 2025">
+Google changed Service Account permissions: accounts created after 15 April 2025 can only access **Shared Drives**, not personal My Drive. If your automation needs to read or write files in a personal Drive, use OAuth2. Service Accounts remain valid for Workspace-wide deployments with domain-wide delegation configured by a super admin. (Source: packet-D, §3.5)
+</Callout>
+
+All four Google nodes — Gmail, Sheets, Drive, Calendar — share the same credential family. Set up one OAuth2 credential per Google product and reuse it across every workflow that needs that service.
+
+---
+
+## Gmail — trigger on email, send with intelligence
+
+### The Gmail Trigger
+
+The Gmail Trigger polls your inbox at a configurable interval and fires a workflow execution for each matching message. Common patterns:
+
+- Watch a specific label (e.g. `to-process`) and fire on arrival
+- Filter by sender or subject keyword
+- Combine with a label operation to mark processed messages, so re-runs skip them
+
+```
+Gmail Trigger (label: "to-process")
+  → AI Agent (Claude: classify + draft reply)
+  → Gmail: Reply to thread
+  → Gmail: Remove label "to-process", add label "done"
+```
+
+### Message operations
+
+The Gmail node covers the full message lifecycle: send, reply, get, get-list, delete, mark read/unread, and add/remove labels. Replies preserve thread context — pass the `threadId` from the trigger output and n8n keeps the conversation intact.
+
+Attachments on replies work through the standard n8n binary data pattern: a preceding node (HTTP Request, Drive Download, etc.) puts a file into the item's binary fields, and you reference that field name in the Gmail node's "Attachment Field Name" setting.
+
+### Wiring Claude into Gmail
+
+The most valuable pattern is AI triage: Gmail receives the email, Claude reads it, decides what kind of response it needs, and either drafts a reply for human review or sends it automatically based on the classification.
+
+<Mermaid chart={`sequenceDiagram
+    participant Gmail as Gmail Trigger
+    participant Claude as AI Agent (Claude)
+    participant Sheets as Google Sheets
+    participant Reply as Gmail: Reply
+
+    Gmail->>Claude: subject + body + sender
+    Claude->>Claude: classify intent\n(support / sales / spam / action-needed)
+    Claude->>Sheets: append row (sender, intent, confidence, draft)
+    alt confidence >= 0.9 and intent = support
+        Claude->>Reply: send drafted reply
+    else
+        Claude->>Sheets: mark "needs human review"
+    end
+`} />
+
+The confidence gate is important. Let Claude handle the high-certainty cases automatically and surface the ambiguous ones to a Sheets log that a human checks once a day. This keeps the automation useful without removing oversight on edge cases.
+
+---
+
+## Google Sheets — your automation's state layer
+
+Sheets fills a role that surprises many newcomers: it is not just a data source but a **mutable state store** that non-technical teammates can inspect and edit directly. In n8n automations this makes it the ideal log, queue, and config surface.
+
+### Core operations
+
+| Operation | What it does |
+|---|---|
+| Append Row | Add a new row at the end |
+| Append or Update (upsert) | Update a matching row or insert if not found |
+| Get Row(s) | Read rows; filter by column value |
+| Lookup Row | Find first match; set "Return All Matches" for multiple results |
+| Update Row | Change specific cells by row number |
+| Delete Row | Remove a row by number |
+
+<Callout type="note" title="Filter returns one match by default">
+The Sheets Lookup Row operation returns only the first matching row unless you explicitly set "Filter Has Multiple Matches" to "Return All Matches". Missing this setting is the most common reason a lookup-based workflow silently drops data. (Source: packet-D, §3.2)
+</Callout>
+
+### The Sheets Trigger
+
+The Google Sheets Trigger watches a sheet for changes — new rows or updates — and fires the workflow immediately. This makes Sheets a lightweight inbound queue: a form submission, a Zapier zap, or a human adding a row all become workflow triggers.
+
+### Pattern: interview scheduling pipeline
+
+n8n's community template library includes an interview scheduling workflow (template #5001) that shows multi-service orchestration cleanly: read candidates from Sheets, create Calendar events, send personalized Gmail confirmations, then log outcomes back to the same sheet. The shape of that pattern reappears in dozens of real automations:
+
+```
+Sheets Trigger (new row in "Candidates")
+  → Google Calendar: create event
+  → AI Agent: personalize email body
+  → Gmail: send to candidate
+  → Sheets: update row with "scheduled" + event ID
+```
+
+Each step is independently testable, and the Sheets log gives you a full audit trail without building a database.
+
+---
+
+## Google Drive — file events as workflow triggers
+
+Drive is the entry point for document-centric automations: a new PDF triggers a processing workflow, a folder upload kicks off a review cycle, or a changed file reruns an analysis.
+
+### Trigger events
+
+The Google Drive Trigger listens for:
+
+- **File Created** — new file lands in a watched folder
+- **File Updated** — an existing file changes
+- **File Created or Updated** — either of the above
+- **Folder Created** — a subfolder appears
+- **File Deleted** — removal event
+
+### File operations
+
+Once triggered, the Drive node can: upload, download, move, copy, share, list, update metadata, or create a file from a text string. The Download operation returns binary data that subsequent nodes (Claude, a Sheets append, an email attachment) can consume directly.
+
+### Pattern: document intake and analysis
+
+```
+Drive Trigger (File Created in "Inbox" folder)
+  → Google Drive: Download File
+  → AI Agent (Claude): extract key fields, summarize
+  → Google Sheets: Append Row (filename, summary, extracted fields)
+  → Gmail: notify owner with summary
+  → Google Drive: Move File to "Processed" folder
+```
+
+This pattern handles incoming contracts, invoices, reports, or any document type where the value is in the extracted content rather than the file itself.
+
+---
+
+## Google Calendar — time as a trigger and output
+
+Calendar sits at both ends of workflows: it produces events that trigger automations (meeting starting in 30 minutes — prepare briefing) and receives events created by other services (a Sheets row becomes a calendar block).
+
+### Trigger modes
+
+The Google Calendar Trigger offers three modes:
+
+- **New event created** — fires when any event is added
+- **Event updated** — fires on changes to an existing event
+- **Event starting** — fires a configurable lead time before an event begins (useful for pre-meeting briefings)
+
+### Event operations
+
+Create, get, update, and delete are all available. The update operation supports two attendee management strategies: **append** (add new attendees without removing existing ones) or **replace** (set the attendee list to exactly what you specify).
+
+### Pattern: daily briefing before your first meeting
+
+One of the most practically useful automations combines Calendar's "event starting" trigger with Gmail and Claude:
+
+```
+Calendar Trigger (event starting, 30 min lead time)
+  → Gmail: get-list (last 48 hours, filter by attendee domains)
+  → AI Agent (Claude): generate meeting brief
+    (attendees, recent email threads, agenda, suggested talking points)
+  → Gmail: send brief to yourself
+```
+
+The community template library includes a workflow (template #4385) that does exactly this with Gmail and Claude. The key design decision is the lead time: 30 minutes is enough to read the brief before joining; 5 minutes is too short to be useful. (Source: packet-D, §8.3)
+
+---
+
+## Composing multi-service workflows
+
+Individual service connections become powerful when chained. The common challenge is keeping chains readable and maintainable as they grow.
+
+### The morning briefing pattern
+
+A daily briefing that combines Calendar, Gmail, and Claude is a high-value workflow that most people can set up in under an hour. The shape is:
+
+<Mermaid chart={`flowchart LR
+    A["Schedule Trigger\n6:00 AM daily"] --> B["Calendar: list\ntoday's events"]
+    A --> C["Gmail: get-list\n(last 24 hours,\nunread)"]
+    B --> D["Merge"]
+    C --> D
+    D --> E["AI Agent\n(Claude: summarize,\nprioritize, action items)"]
+    E --> F["Gmail: send\nHTML digest to self"]
+`} />
+
+A few things to get right:
+
+- **Set timezone explicitly.** n8n's self-hosted default is `America/New_York`; if you are not in that zone, set the workflow timezone in Workflow Settings or your scheduled trigger will fire at the wrong time. (Source: packet-D, §2.1)
+- **Handle the Merge stall.** If Calendar returns zero events, the Merge node waits indefinitely. Add a fallback item on the Calendar branch for days with no events. (Source: packet-D, §10)
+- **Use HTML for the email body.** Claude can output structured HTML; Gmail renders it natively. A plain-text digest is harder to scan quickly.
+
+### Bulk event creation from Sheets
+
+The reverse direction — Sheets driving Calendar — is equally useful for scheduling interviews, recurring reminders, or content publish dates. Read all rows from a Sheets range, loop with an n8n Split In Batches node, and create one Calendar event per row. n8n bills per workflow execution, not per node call, so a 100-row batch costs one execution. (Source: packet-D, §1.2)
+
+### Claude as the reasoning layer
+
+In every pattern above, Claude's role is consistent: it reads unstructured inputs (email bodies, document text, event descriptions) and produces structured outputs (classifications, summaries, draft text, extracted fields) that downstream nodes can act on deterministically.
+
+The practical approach is to put Claude between the data source and the action node, and to treat Claude's output as JSON when you need to branch on it:
+
+```
+Gmail Trigger
+  → AI Agent (Claude)
+      system: "You are a triage assistant. Respond ONLY with JSON:
+               { intent: string, urgency: 'low'|'medium'|'high', draft: string }"
+  → Code Node: JSON.parse($json.output)
+  → IF: urgency === 'high'
+      → Gmail: Reply immediately
+      → Sheets: Log for daily review
+```
+
+Constraining Claude's output format with a system prompt, then parsing it with a Code node, gives you reliable branching without fragile string-matching.
+
+<Callout type="tip" title="Claude tends to follow structured output instructions reliably">
+Community n8n practitioners note that Claude tends to follow system prompt format instructions more consistently than some other models, which makes it well-suited to the structured-output role in automation branches. (Source: packet-D, §4.1)
+</Callout>
+
+---
+
+## Error handling for GSuite workflows
+
+Google APIs return rate-limit errors (HTTP 429) and transient failures. A workflow that does not handle these will silently drop data.
+
+**Retry on transient errors.** Enable "Retry on Fail" on Gmail, Sheets, Drive, and Calendar nodes, and set retry intervals to increase with each attempt (1 s, 2 s, 4 s). This handles the majority of 429s and momentary outages without manual intervention. (Source: packet-D, §6)
+
+**Dead-letter rows for bad data.** If a Sheets lookup fails because a row is malformed, route the bad item to a dedicated error sheet rather than stopping the whole workflow. The main path continues; the error sheet becomes a human-review queue.
+
+**Name your workflows descriptively.** `Daily Briefing – 6 AM` and `Drive Intake – Contracts Folder` are immediately meaningful when you are debugging at midnight. `Workflow 4` is not. (Source: packet-D, §8.4)
+
+---
+
+## Sharp edges to know before you ship
+
+| Issue | Detail |
+|---|---|
+| Service Account My Drive access | Accounts created after April 2025 cannot access personal My Drive — use OAuth2 instead. |
+| Merge node with empty branches | A branch that produces zero items causes Merge to stall indefinitely. Add a fallback No-Op item. |
+| Self-hosted timezone default | Defaults to `America/New_York`. Always set timezone explicitly in Workflow Settings. |
+| Inactive workflow toggle | A workflow with the toggle off never runs scheduled triggers, even if the schedule would otherwise fire. |
+| Concurrency and manual test runs | Manual executions bypass concurrency limits. Always test at realistic throughput before relying on concurrency settings. (Source: packet-D, §10) |
+
+---
+
+## Recap and what's next
+
+You now have the wiring patterns for all four major GSuite services in n8n: Gmail for email in/out, Sheets as a mutable state layer and trigger surface, Drive for file-event pipelines, and Calendar for time-based triggers and event creation. Claude threads through all of them as the reasoning layer that turns unstructured data into structured decisions downstream nodes can act on.
+
+The next chapter covers **scheduling and background automation** — how n8n's cron triggers, loop patterns, and sub-workflows let you build a personal automation system that runs reliably around the clock without manual intervention.

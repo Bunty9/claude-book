@@ -1,0 +1,299 @@
+# Git, PRs & CI/CD with Claude
+
+Claude Code can drive your entire version-control workflow — staging changes, writing commit messages, opening pull requests, and watching CI — without you losing the thread of what changed or why. This chapter shows how to structure that handoff so you stay in control of your git history while Claude handles the mechanical work.
+
+## What the chapter covers
+
+You will learn how Claude interacts with git through the `Bash` tool, which guardrails keep commits safe, how to hook into the workflow for policy enforcement, and how to wire Claude into CI/CD pipelines so it can respond to build failures autonomously.
+
+---
+
+## How Claude commits code
+
+Claude has no native git tool. Every git operation — `git add`, `git commit`, `git push`, `git log` — goes through the `Bash` tool, the same tool it uses for any shell command. That means Claude can run any git command your shell can, and the same permission rules apply. (Source: packet-A, §2)
+
+The built-in git workflow instructions (controlled by `includeGitInstructions: true` in `settings.json`) prompt Claude to follow a sensible commit sequence:
+
+1. Read the working tree state (`git status`, `git diff`).
+2. Draft a commit message that describes intent, not mechanics.
+3. Stage only relevant files — not everything, not secrets.
+4. Commit, then report the SHA.
+
+This sequence is advisory, not enforced. If you want something stronger — a specific commit-message format, a branch naming convention, an authorship check — you need a hook.
+
+### The `dontAsk` permission mode for CI
+
+In interactive sessions, Claude prompts you before running `git push` or `gh pr create` unless you have added them to your allow list. In CI/CD pipelines you typically want unattended operation. Set `permissionMode: "dontAsk"` and enumerate exactly which git and `gh` commands are permitted:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(gh pr create *)",
+      "Bash(gh pr merge *)"
+    ]
+  }
+}
+```
+
+Any Bash command not on the allow list is denied automatically — Claude cannot run it, even if it tries. This is the correct posture for unattended pipelines. (Source: packet-A, §3)
+
+---
+
+## Enforcing commit policy with a PreToolUse hook
+
+The most powerful integration point for git is the `PreToolUse` hook on `Bash`. It fires before every shell command executes, receives the full command string, and can block the command by exiting with code `2`.
+
+A practical example: enforcing commit author identity and banning AI attribution strings.
+
+```bash
+#!/usr/bin/env bash
+# ~/.claude/hooks/verify-commit.sh
+# Fires on every Bash call; exit 2 blocks the tool.
+
+set -euo pipefail
+
+INPUT="$(cat)"
+COMMAND="$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('command',''))")"
+
+# Only inspect git commit calls
+if ! echo "$COMMAND" | grep -q "git commit"; then
+  exit 0
+fi
+
+# Check author identity
+ACTUAL_NAME="$(git config user.name 2>/dev/null || echo '')"
+ACTUAL_EMAIL="$(git config user.email 2>/dev/null || echo '')"
+EXPECTED_NAME="Your Name"
+EXPECTED_EMAIL="you@example.com"
+
+if [[ "$ACTUAL_NAME" != "$EXPECTED_NAME" || "$ACTUAL_EMAIL" != "$EXPECTED_EMAIL" ]]; then
+  echo "Commit blocked: author mismatch ($ACTUAL_NAME <$ACTUAL_EMAIL>)" >&2
+  exit 2
+fi
+
+# Ban AI attribution patterns in the commit message
+MSG="$(echo "$COMMAND" | grep -oP '(?<=-m ")[^"]*' || true)"
+if echo "$MSG" | grep -Eiq "co-authored-by: claude|generated (with|by) claude|🤖"; then
+  echo "Commit blocked: AI attribution detected in message." >&2
+  exit 2
+fi
+
+exit 0
+```
+
+Wire this into your global settings so it applies to every project:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/verify-commit.sh",
+            "if": "Bash(git commit*)"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The `if` field pre-filters so the script only runs on `git commit` calls — not on every Bash command. (Source: packet-A, §5)
+
+<Callout type="warning" title="Exit code 2 is the blocking signal">
+A hook that exits `0` is treated as success (Claude reads its stdout for optional JSON instructions). A hook that exits `2` blocks the tool call entirely and surfaces the script's stderr as the error message. Any other exit code shows stderr but does not block. Get this right or commits will slip through on script errors.
+</Callout>
+
+---
+
+## Writing commit messages that age well
+
+Claude defaults to describing what changed mechanically ("add null check to user.ts"). You can push it toward intent-first messages with a standing instruction in your `CLAUDE.md` or system prompt:
+
+```
+When writing commit messages:
+- Use conventional commit prefixes: fix:, feat:, refactor:, chore:
+- First line ≤ 72 characters; imperative mood ("add" not "adds")
+- Body explains WHY, not what — the diff already shows what
+- Never add Co-Authored-By, "generated by", or AI attribution
+```
+
+Claude reads `CLAUDE.md` on every session start and treats it as a standing constraint. It is re-injected on every request but prompt-cached after the first, so there is no incremental token cost for this instruction across commits in the same session. (Source: packet-A, §12)
+
+---
+
+## Opening and reviewing pull requests
+
+Claude can open pull requests through the `gh` CLI (GitHub's official tool). A typical sequence:
+
+```
+You: "Open a PR from this branch to dev. Title and body based on the commits."
+```
+
+Claude will:
+
+1. Run `git log origin/dev..HEAD --oneline` to see what commits will land.
+2. Run `git diff origin/dev...HEAD` to understand the full diff.
+3. Draft a title under 70 characters and a body with a summary and test plan.
+4. Run `gh pr create --title "..." --body "..."`.
+5. Report the PR URL.
+
+The quality of the PR description depends directly on the quality of your commit messages. Good commits → good PR body. If your commits are mechanical, the PR body will be too.
+
+### Claude as a pre-merge reviewer
+
+Before merging, you can ask Claude to review the diff for issues:
+
+```
+"Review this PR diff for correctness bugs and anything that looks like a regression."
+```
+
+Claude will read the diff, check the changed files in context, and produce findings. This works best when you give it a scope: "correctness only", "security", "API contract", "test coverage". An open-ended review produces a lot of noise.
+
+For larger PRs, the `pr-review-toolkit` skill (if installed) dispatches multiple review sub-agents in parallel, each covering a different quality dimension, and aggregates results. This is the pattern that catches the bugs that slip through a single-pass review — the kind that requires simultaneously holding the auth layer, the DB query, and the API contract in mind. (Source: packet-E, F-28, F-16)
+
+---
+
+## CI/CD integration
+
+Claude becomes especially useful when wired into a CI pipeline — not just to run commands, but to react to failures autonomously.
+
+### The basic integration pattern
+
+```mermaid
+sequenceDiagram
+    participant Dev as Developer
+    participant CI as CI Runner
+    participant Claude as Claude (SDK/CLI)
+    participant Repo as Git Repo
+
+    Dev->>Repo: push branch
+    CI->>CI: run smoke / lint / typecheck
+    CI-->>Claude: on failure, call claude -p "Fix these errors: ..."
+    Claude->>Repo: read failing files, edit, commit fix
+    Claude-->>CI: done
+    CI->>CI: re-run checks on new commit
+```
+
+<Mermaid chart={`sequenceDiagram
+    participant Dev as Developer
+    participant CI as CI Runner
+    participant Claude as Claude SDK
+    participant Repo as Git Repo
+
+    Dev->>Repo: push branch
+    CI->>CI: run lint / typecheck / tests
+    CI-->>Claude: on failure — pass error output as prompt
+    Claude->>Repo: read files, edit, stage, commit fix
+    Claude-->>CI: exit 0
+    CI->>CI: re-run checks
+`} />
+
+In a GitHub Actions workflow this looks like:
+
+```yaml
+- name: Typecheck
+  id: typecheck
+  run: pnpm typecheck
+  continue-on-error: true
+
+- name: Ask Claude to fix type errors
+  if: steps.typecheck.outcome == 'failure'
+  env:
+    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+  run: |
+    ERROR_OUTPUT=$(pnpm typecheck 2>&1 || true)
+    claude -p "Fix these TypeScript errors. Commit the fix.\n\n$ERROR_OUTPUT" \
+      --allowedTools "Bash(git *),Read,Edit,Grep,Glob" \
+      --permission-mode dontAsk \
+      --max-turns 20
+```
+
+A few things to get right here:
+
+- **`--permission-mode dontAsk`** — without this, Claude will block waiting for a terminal prompt that no human will see.
+- **`--allowedTools`** — enumerate exactly what Claude may do. In a CI context, `Bash(git push)` should only be allowed if you want Claude to push back to the branch automatically.
+- **`--max-turns`** — cap the loop so a stuck run does not consume infinite tokens. (Source: packet-A, §1)
+
+<Callout type="danger" title="Never put bypassPermissions in CI without an allowlist">
+`bypassPermissions` removes all tool restrictions — Claude can write any file, run any command, call any script. In an isolated container this may be acceptable. On a shared CI runner with access to production secrets, it is not. Use `dontAsk` with an explicit `permissions.allow` list instead.
+</Callout>
+
+### Watching a build with Monitor
+
+The `Monitor` tool runs a command in the background and feeds each output line back to Claude as it arrives. This is the right tool when you want Claude to watch a long-running process and react to specific output patterns:
+
+```
+"Run the deploy script in the background and watch for ERROR lines. If you see one, stop the deploy and report what happened."
+```
+
+Claude issues a `Monitor` call, receives lines as they stream, and can call other tools between line arrivals — or simply wait until the relevant pattern appears. This is how you wire Claude to react to deploy logs without polling. (Source: packet-A, §2)
+
+`Monitor` is not available on Amazon Bedrock, Google Vertex AI, or Microsoft Foundry as of the current version.
+
+---
+
+## Keeping Claude out of production branches
+
+The most important governance boundary in any git workflow is who can push to production branches. Claude should not have that permission by default.
+
+A practical layered approach:
+
+1. **Branch protection** on `main`/`gcp`/`release` — require pull requests, block direct push at the platform level.
+2. **Allow rules** in `.claude/settings.json` that permit `git push` only to feature branch prefixes (`feat/*`, `fix/*`).
+3. **A `PreToolUse` hook** that inspects the push target and blocks any push to `main` or `gcp`.
+
+```bash
+#!/usr/bin/env bash
+# Block pushes to protected branches
+COMMAND="$(cat | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('command',''))")"
+if echo "$COMMAND" | grep -qE "git push.*(main|gcp|release)"; then
+  echo "Direct push to protected branch blocked." >&2
+  exit 2
+fi
+exit 0
+```
+
+The hook runs client-side; branch protection enforces the same rule server-side. Defense in depth: neither alone is sufficient.
+
+---
+
+## A complete per-branch workflow
+
+Putting it together, here is the structure that works for sustained feature development with Claude:
+
+```
+1. Create an isolated worktree (one per feature, never work on main checkout)
+2. Delegate the feature: "Implement X. Follow the conventions in CLAUDE.md."
+3. Claude writes code, runs tests, commits incrementally
+4. PreToolUse hook verifies each commit's author and message
+5. "Open a PR to dev. Do a pr-review-toolkit pass before submitting."
+6. Claude opens the PR, runs the review, stacks fixes as additional commits
+7. You review findings, approve the PR
+8. CI runs on the PR branch; if it fails, Claude can fix and re-push
+9. Merge; worktree cleanup
+```
+
+<Callout type="tip" title="Invest in CLAUDE.md, not per-prompt context">
+The shorter your prompts can be while still producing the right output, the more scalable your workflow is. A well-maintained CLAUDE.md that covers branch conventions, commit format, test requirements, and architecture constraints means you can open a session with "implement feature X" and get correct commits — because all the "how" lives in the standing document, not the prompt. (Source: packet-E, F-20, F-33)
+</Callout>
+
+---
+
+## Recap
+
+- Claude runs all git operations through `Bash` — no native git tool exists, which means the same permission rules and hooks apply.
+- Use `dontAsk` mode with an explicit allow list for CI/CD pipelines; avoid `bypassPermissions` unless the runner is fully isolated.
+- A `PreToolUse` hook on `Bash` is the right enforcement point for commit policy: author identity, message format, branch protection.
+- The `Monitor` tool lets Claude watch live build output and react to log events without polling.
+- A well-maintained `CLAUDE.md` with branch and commit conventions is worth more than a detailed per-prompt instruction — it applies to every session automatically.
+
+**Next:** Chapter "Hooks & Automation" goes deeper into the full 30-event hook system — how to build automated quality gates, session-start context injection, and multi-step pipelines that run without any human in the loop.

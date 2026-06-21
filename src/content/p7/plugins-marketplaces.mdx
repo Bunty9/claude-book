@@ -1,0 +1,256 @@
+# Plugins & marketplaces
+
+Claude Code ships with a plugin system, two official marketplaces, and access to a sprawling MCP ecosystem. This chapter shows you how to install and evaluate plugins, navigate the marketplaces, and wire in MCP servers — so you can expand Claude's default surface without accumulating dead weight in every session.
+
+---
+
+## The plugin model: what a plugin actually is
+
+A plugin is a versioned directory (or `.zip` archive) with a manifest at `.claude-plugin/plugin.json`. Inside that directory you can bundle any combination of:
+
+- **Skills** — slash commands backed by markdown instruction files
+- **Agents** — custom sub-agents with their own tool restrictions and model selection
+- **Hooks** — lifecycle scripts (PreToolUse, PostToolUse, SessionStart, etc.)
+- **MCP server configs** — pre-configured `.mcp.json` wired up and ready
+- **LSP server configs** — language-server integrations
+- **Background monitors** — shell commands whose stdout lines are delivered to Claude as notifications
+- **Binaries** — a `bin/` directory added to your PATH for the session
+
+The manifest `name` field becomes the namespace for every skill in the plugin. A skill called `hello` in a plugin named `my-plugin` is invoked as `/my-plugin:hello`. This scoping prevents collisions when you have dozens of plugins installed. (Source: [code.claude.com/docs/en/plugins](https://code.claude.com/docs/en/plugins))
+
+### Installation scopes
+
+Plugins can be installed at three scopes:
+
+| Scope | Where it's written | Who sees it |
+|---|---|---|
+| `user` | `~/.claude/settings.json` | You, in every project |
+| `project` | `.claude/settings.json` | Everyone who checks out the repo |
+| `local` | Per-user per-repo override | You, in this repo only |
+
+The `project` scope is the right choice when you want your whole team to get the same `commit-commands` or `pr-review-toolkit` behaviour. The `user` scope is right for personal preferences — `learning-output-style`, your preferred LSP, or security tooling you always want active.
+
+<Callout type="tip" title="Check context cost before installing">
+As of v2.1.143, the in-app Discover tab shows a **Context cost** estimate (tokens per turn) for each plugin. A "Will install" component preview landed in v2.1.145. A plugin that adds three MCP servers plus two monitors may balloon your context even when you're not actively using its skills. Read the preview, then decide.
+(Source: [code.claude.com/docs/en/discover-plugins](https://code.claude.com/docs/en/discover-plugins))
+</Callout>
+
+---
+
+## The two official marketplaces
+
+Anthropic maintains two marketplaces. They work differently:
+
+```
+claude-plugins-official      ← auto-registered on first interactive launch
+claude-plugins-community     ← must be added manually
+```
+
+**Official marketplace** (`anthropics/claude-plugins-official`) is curated by Anthropic. Plugins here are reviewed and maintained. It has over 55 plugins covering LSP integrations, workflow tools, platform connectors, and output styles. This is where you start. (Source: [github.com/anthropics/claude-plugins-official](https://github.com/anthropics/claude-plugins-official))
+
+**Community marketplace** (`anthropics/claude-plugins-community`) is third-party, review-gated but not Anthropic-maintained. Add it with:
+
+```bash
+/plugin marketplace add anthropics/claude-plugins-community
+```
+
+Then browse with `/plugin > Discover` in-app or at `claude.com/plugins`.
+
+### The demo marketplace
+
+The main `anthropics/claude-code` repo also has a `plugins/` subtree that must be added manually. It contains sample plugins that demonstrate what the system can do — `commit-commands` originated here. Good reference reading when you want to build your own.
+
+---
+
+## What's worth installing: a practitioner's map
+
+The official catalogue divides into four categories. Here is how to think about each.
+
+### Language server (LSP) plugins
+
+There are eleven of these — one per language. Each installs a pre-configured LSP integration so Claude gets go-to-definition, type hover, and diagnostic feedback during edits. The plugins themselves are thin wrappers; the real requirement is that you have the binary installed:
+
+```bash
+# TypeScript
+npm install -g typescript-language-server typescript
+/plugin install typescript-lsp@claude-plugins-official
+
+# Python
+pip install pyright
+/plugin install pyright-lsp@claude-plugins-official
+
+# Rust (requires rust-analyzer already installed via rustup component add rust-analyzer)
+/plugin install rust-analyzer-lsp@claude-plugins-official
+```
+
+Install the LSP plugin for the language you work in daily. Skip the others — each one adds context overhead even when unused.
+
+### External integration plugins
+
+These bundle a pre-configured MCP server for a platform you already use:
+
+```bash
+/plugin install github@claude-plugins-official
+/plugin install linear@claude-plugins-official
+/plugin install supabase@claude-plugins-official
+/plugin install sentry@claude-plugins-official
+```
+
+The `github` plugin connects Claude to PRs, issues, and code search. `linear` wires issue tracking. `sentry` lets Claude look up error traces by ID. `supabase` adds DB queries and edge function management.
+
+<Callout type="note" title="EMA: zero-touch SSO for teams">
+Several of these plugins — Asana, Atlassian, Canva, Figma, Granola, Linear, Supabase — support **Enterprise-Managed Authorization (EMA)**, which reached stable status on June 18, 2026. With EMA, your IdP (Okta is the first supported provider) handles consent at the org level. Team members get MCP access without individual OAuth flows. If you're on a Team or Enterprise plan, configuring EMA in Claude automatically applies to Claude Code.
+(Source: [blog.modelcontextprotocol.io/posts/enterprise-managed-auth](https://blog.modelcontextprotocol.io/posts/enterprise-managed-auth/))
+</Callout>
+
+### Workflow plugins
+
+These are the high-leverage installs for most engineers:
+
+| Plugin | What it does |
+|---|---|
+| `security-guidance` | Reviews every change Claude writes for common vulnerabilities and fixes them in-session. Released May 2026 — newest to try. |
+| `commit-commands` | Git commit, push, and PR creation as slash commands |
+| `pr-review-toolkit` | Parallel review agents covering correctness, security, and regressions |
+| `feature-dev` | 7-phase guided feature workflow: plan → spec → implement → review → ship |
+| `claude-md-management` | Audits CLAUDE.md, captures learnings, keeps standing instructions in sync |
+| `claude-code-setup` | Analyzes your codebase and recommends automations, hooks, and settings |
+
+Install `security-guidance` unconditionally if you ship code to production. Install `pr-review-toolkit` if you review PRs in Claude. Everything else is optional.
+
+### Output style plugins
+
+`explanatory-output-style` adds implementation rationale to Claude's responses — useful when you're learning a new codebase. `learning-output-style` makes Claude interactive rather than prescriptive. Install these per-project or per-session, not globally — they change every response, not just targeted commands.
+
+---
+
+## The MCP ecosystem
+
+The Model Context Protocol is a vendor-neutral standard for connecting AI agents to external systems. Anthropic donated it to the Linux Foundation's Agentic AI Foundation (AAIF) in December 2025, with AWS, Google, Microsoft, OpenAI, and others as founding members. That governance structure means MCP is not going away and is not Claude-specific: ChatGPT, Cursor, Gemini, and VS Code Copilot all support it. (Source: [anthropic.com/news/donating-the-model-context-protocol](https://www.anthropic.com/news/donating-the-model-context-protocol-and-establishing-of-the-agentic-ai-foundation))
+
+### Where to find MCP servers
+
+The major registries as of mid-2026:
+
+<Mermaid chart={`graph LR
+    A[You] --> B(Official<br/>Plugin Marketplace)
+    A --> C(registry.modelcontextprotocol.io<br/>~2 000 servers — AAIF-run)
+    A --> D(PulseMCP<br/>15 000+ — updated daily)
+    A --> E(Smithery<br/>7 300+ — hosted option)
+    A --> F(mcp.so / Glama<br/>community directories)
+    B --> G[Installed &amp; configured]
+    C --> G
+    D --> G
+    E --> G
+    F --> G
+`} />
+
+**Start with the official plugin marketplace** — the integration plugins there bundle MCP servers that are already configured and namespaced correctly. Going to an external registry is the right move when you need something the official marketplace doesn't cover.
+
+**PulseMCP** (`pulsemcp.com`) tracks over 15,000 servers updated daily — the broadest catalogue. **Smithery** (`smithery.ai`) is smaller but also provides hosted MCP infrastructure so you can run servers without managing the process yourself. The AAIF-run official registry at `registry.modelcontextprotocol.io` is the most authoritative but least comprehensive. (Source: [pulsemcp.com/servers](https://www.pulsemcp.com/servers); [digitalapplied.com/blog/mcp-adoption-statistics-2026](https://www.digitalapplied.com/blog/mcp-adoption-statistics-2026-model-context-protocol))
+
+### The Anthropic reference servers
+
+Anthropic maintains seven actively developed reference servers in the `modelcontextprotocol/servers` repo. These are the ones to read if you're building your own — each is a clean, minimal implementation of the spec:
+
+```
+everything          reference/test: prompts, resources, and tools in one place
+fetch               web content → markdown conversion
+filesystem          file ops with configurable access controls
+git                 read, search, and manipulate git repos
+memory              knowledge-graph persistent memory
+sequential-thinking dynamic problem-solving via thought sequences
+time                timezone queries and conversion
+```
+
+All the others that used to live there (GitHub, Slack, Postgres, Puppeteer, etc.) have been archived and moved to vendor ownership. Those vendor-maintained versions are what the official marketplace plugins wrap.
+
+---
+
+## Browsing the full ecosystem interactively
+
+The widget below covers all the plugins, MCP servers, skills, and repos discussed in this chapter. Filter by type, use case, or "New / featured only" to narrow to what matters for your stack.
+
+<EcosystemExplorer />
+
+---
+
+## Judging what's worth adding
+
+The ecosystem is large and growing quickly. Before installing anything, apply this filter:
+
+**Does it reduce something you do manually, repeatedly?**
+
+A GitHub plugin that lets Claude look up issue context while you're coding saves real friction. An output-style plugin installed globally to every project mostly adds noise. The context cost callout above is a useful proxy: a plugin with a high per-turn token cost is doing something substantial every turn, not just on demand.
+
+A practical decision tree:
+
+```
+Is it an LSP for your primary language?
+  Yes → install at user scope
+  No  ↓
+
+Does it connect to a service you already pay for and use every day?
+  Yes → install at project scope, check EMA if on Enterprise
+  No  ↓
+
+Is it a workflow plugin your whole team would benefit from?
+  Yes → commit it to .claude/settings.json (project scope)
+  No  ↓
+
+Is it a curiosity or experiment?
+  Try it locally, uninstall if unused after a week.
+```
+
+<Callout type="warning" title="Uninstall what you don't use">
+Every installed plugin — especially those that add MCP servers or monitors — adds to the context window on every turn. A graveyard of forgotten integrations quietly degrades response quality and increases cost. Run `/plugin list --enabled` periodically and prune anything you haven't actively used.
+(Source: [code.claude.com/docs/en/discover-plugins](https://code.claude.com/docs/en/discover-plugins))
+</Callout>
+
+---
+
+## Community resources worth bookmarking
+
+Beyond the official marketplaces, two community resources stand out:
+
+**`rohitg00/awesome-claude-code-toolkit`** (Everything Claude Code) — 135 agents, 35 skills, 42 commands, 176+ plugins, hooks, rules, and templates in a single portable repo. The highest-activity community aggregation point as of mid-2026. (Source: [github.com/rohitg00/awesome-claude-code-toolkit](https://github.com/rohitg00/awesome-claude-code-toolkit))
+
+**`yamadashy/repomix`** — packs an entire repository into one AI-friendly file. Run `npx repomix` in any project. There's also a Chrome extension that adds a "Pack" button directly to GitHub repo pages, and a companion MCP server (`repomix-mcp`) that exposes the same capability as an MCP tool. Useful for feeding large codebases into context. (Source: [github.com/yamadashy/repomix](https://github.com/yamadashy/repomix))
+
+---
+
+## Building your own plugin
+
+If none of the existing plugins fit a workflow you have, the barrier to authoring your own is low. The minimum viable plugin is a directory with a manifest and one skill:
+
+```
+my-plugin/
+  .claude-plugin/
+    plugin.json       ← name, version, description
+  skills/
+    my-skill/
+      SKILL.md        ← description (when to invoke) + instructions
+```
+
+Scaffold it with:
+
+```bash
+claude plugin init my-plugin
+```
+
+This command (available since v2.1.157) creates the directory under `~/.claude/skills/` with a starter manifest and SKILL.md, and loads it immediately as `my-plugin@skills-dir` — no restart needed. The `plugin-dev` plugin from the official marketplace wraps the validation and submission workflow if you want to share it. (Source: [code.claude.com/docs/en/plugins](https://code.claude.com/docs/en/plugins))
+
+Changes to skills, agents, hooks, and MCP configs reload without restarting the session: run `/reload-plugins`.
+
+---
+
+## Recap
+
+- Plugins bundle skills, agents, hooks, MCP servers, and monitors under a single versioned manifest. The namespace prefix prevents skill name collisions across plugins.
+- Two official marketplaces: `claude-plugins-official` (auto-registered, Anthropic-curated) and `claude-plugins-community` (third-party, review-gated, add manually).
+- Install the LSP plugin for your primary language, `security-guidance` for any production codebase, and integration plugins only for services your team uses daily.
+- MCP is a vendor-neutral standard now governed by the Linux Foundation's AAIF — it works across Claude, ChatGPT, Cursor, and VS Code Copilot.
+- Every plugin has a context cost. Audit with `/plugin list --enabled` and prune what you don't use.
+- `claude plugin init <name>` scaffolds a new plugin in one command; `/reload-plugins` picks up changes without restarting.
+
+**Next:** Chapter "Agents & sub-agents" covers how to define custom agents in `.claude/agents/`, when to spawn parallel sub-agents, and how dynamic workflow patterns let a lead agent fan out work across dozens of specialists simultaneously.

@@ -1,0 +1,311 @@
+# The Claude API & Agent SDK
+
+This chapter explains how to call the Claude API directly and how to embed the full Claude Code agent loop inside your own applications using the Agent SDK. By the end you will understand the message-loop mechanics, the SDK's entry points in TypeScript and Python, and the practical decisions — tool sets, permission modes, hook callbacks, cost guards — that determine whether an embedded agent behaves reliably in production.
+
+## Why the API alone is not enough
+
+The raw Claude API (Anthropic's Messages endpoint) is a single-turn request-response interface. You send a list of messages; the model returns one response. That is sufficient for many tasks: summarization, classification, simple Q&A. It is not sufficient for coding agents, file-editing workflows, or anything that requires the model to call tools, read the results, and then continue reasoning.
+
+The Agent SDK solves this by embedding the same loop that Claude Code runs internally — the multi-turn cycle of model call → tool dispatch → result injection → repeat — in a library you can import directly. You get every built-in tool (Read, Edit, Write, Bash, Glob, Grep, WebSearch, WebFetch, and more), session management, cost tracking, hook callbacks, and MCP server support, without shelling out to the `claude` binary.
+
+<Callout type="note" title="Two different surfaces">
+The Anthropic Messages API (at `api.anthropic.com/v1/messages`) is a stateless HTTP endpoint. The Agent SDK (`@anthropic-ai/claude-agent-sdk` for TypeScript, `claude-agent-sdk` for Python) is a library that wraps that endpoint in a stateful agent loop. They are related but distinct. This chapter is about the SDK. If you need the raw HTTP surface — for streaming, tool definitions, or non-agent use cases — the `/claude-api` skill covers that in full.
+</Callout>
+
+## The agent loop — what actually runs
+
+Understanding what the SDK does under the hood is the foundation for using it well. The loop is a turn-based cycle:
+
+<Mermaid chart={`
+sequenceDiagram
+    participant App as Your App
+    participant SDK as Agent SDK
+    participant Model as Claude Model
+    participant Tools as Tool Handlers
+
+    App->>SDK: query(prompt, options)
+    loop Until no tool calls remain
+        SDK->>Model: POST /messages (messages array)
+        Model-->>SDK: AssistantMessage (may include tool_use blocks)
+        alt Tool calls present
+            SDK->>Tools: Dispatch tool calls (parallel for read-only, sequential for write)
+            Tools-->>SDK: Tool results
+            SDK->>SDK: Append tool results as UserMessage
+        end
+    end
+    Model-->>SDK: Final text-only response
+    SDK-->>App: ResultMessage (text, token usage, cost, session ID)
+`} />
+
+The only runtime state is an append-only message array. Each complete cycle — model response plus tool execution — is one *turn*. The loop terminates when Claude produces a response with no tool call requests. At that point the SDK emits a `ResultMessage` with subtypes: `success`, `error_max_turns`, `error_max_budget_usd`, `error_during_execution`, or `error_max_structured_output_retries`. (Source: packet-A, §1)
+
+One important parallelism rule: read-only tools (`Read`, `Glob`, `Grep`, and read-only MCP tools) can run concurrently within a single turn. State-modifying tools (`Edit`, `Write`, `Bash`) run sequentially. Custom tools default to sequential unless you annotate them with `readOnlyHint`. The SDK manages this automatically. (Source: packet-A, §1)
+
+## Installing and calling the SDK
+
+```bash
+# TypeScript
+npm install @anthropic-ai/claude-agent-sdk
+
+# Python
+pip install claude-agent-sdk
+```
+
+The primary entry point is `query()` — an async iterator in TypeScript, an async generator in Python.
+
+```typescript
+import { query } from '@anthropic-ai/claude-agent-sdk'
+
+for await (const message of query({
+  prompt: 'Read package.json and list all direct dependencies.',
+  model: 'claude-sonnet-4-5',
+  maxTurns: 10,
+  maxBudgetUsd: 0.50,
+})) {
+  if (message.type === 'result') {
+    console.log(message.subtype)        // 'success' | 'error_*'
+    console.log(message.result)         // final text
+    console.log(message.usage)          // input/output tokens
+    console.log(message.sessionId)      // resume token
+  }
+}
+```
+
+```python
+import asyncio
+from claude_agent_sdk import query, ClaudeAgentOptions
+
+async def main():
+    async for message in query(ClaudeAgentOptions(
+        prompt="Read package.json and list all direct dependencies.",
+        model="claude-sonnet-4-5",
+        max_turns=10,
+        max_budget_usd=0.50,
+    )):
+        if message.type == "result":
+            print(message.subtype, message.result)
+
+asyncio.run(main())
+```
+
+`maxTurns` counts only tool-use turns, not the final text-only turn. Without either limit the loop runs indefinitely — hazardous for open-ended prompts. Set both whenever you embed an agent in a server or CI pipeline. (Source: packet-A, §1)
+
+## Loading project context
+
+By default the SDK runs with no project context — no CLAUDE.md, no settings, no hooks. Pass `settingSources: ["project"]` to load `.claude/settings.json` (including hooks, allowed tools, and any CLAUDE.md files) from the current directory:
+
+```typescript
+for await (const message of query({
+  prompt: 'Fix the TypeScript errors reported by tsc --noEmit.',
+  settingSources: ['project'],
+})) { /* ... */ }
+```
+
+This is the difference between an agent that knows your project conventions and one that works blind. For most real projects, this option is non-negotiable.
+
+## Permission modes
+
+The SDK exposes six permission modes. The right choice depends on your trust context:
+
+| Mode | Behaviour | When to use |
+|---|---|---|
+| `default` | Prompts for every potentially dangerous operation | Interactive prototyping |
+| `acceptEdits` | Auto-approves file edits and common filesystem commands | Semi-automated workflows |
+| `plan` | Read-only; file edits always prompt | Exploration and planning passes |
+| `dontAsk` | Never prompts; everything not in allow list is denied | CI/CD pipelines |
+| `auto` | Model classifier approves or denies each call | TypeScript SDK; balanced autonomy |
+| `bypassPermissions` | Skips all permission checks | Isolated containers only; never run as root |
+
+```typescript
+for await (const message of query({
+  prompt: '...',
+  permissionMode: 'dontAsk',
+  allowedTools: ['Read', 'Bash(pnpm typecheck)', 'Bash(pnpm test)'],
+})) { /* ... */ }
+```
+
+In CI, `dontAsk` with a narrow `allowedTools` allowlist is the right combination: the agent cannot do anything outside the list, and there are no prompts to interrupt the run. (Source: packet-A, §3)
+
+<Callout type="warning" title="bypassPermissions is for containers, not servers">
+If you run an agent with `bypassPermissions` in a long-lived process with network access, a malicious prompt could instruct it to exfiltrate files or make arbitrary HTTP calls. Use this mode only inside disposable, isolated environments — Docker containers with no external access, ephemeral CI runners, or sandboxed VMs. The SDK enforces one hard constraint: it refuses to run in bypass mode as root on Unix.
+</Callout>
+
+## Hook callbacks — in-process guardrails
+
+Hooks in the SDK are callback functions, not shell scripts. They run in your application process with no token cost, and they can read or modify what the agent is about to do before it does it.
+
+The most important hook for production use is `PreToolUse`. It fires before every tool call and can block the call by returning a deny decision:
+
+```typescript
+import { query } from '@anthropic-ai/claude-agent-sdk'
+
+for await (const message of query({
+  prompt: '...',
+  hooks: {
+    PreToolUse: [{
+      matcher: 'Bash',
+      hooks: [async ({ toolInput }) => {
+        const cmd = typeof toolInput.command === 'string' ? toolInput.command : ''
+        // Block any git push to main or master
+        if (/git push.*\b(main|master)\b/.test(cmd)) {
+          return {
+            hookSpecificOutput: {
+              permissionDecision: 'deny',
+              permissionDecisionReason: 'Direct push to main is not allowed.',
+            },
+          }
+        }
+        return { hookSpecificOutput: { permissionDecision: 'allow' } }
+      }],
+    }],
+  },
+})) { /* ... */ }
+```
+
+`PostToolUse` lets you observe or modify what the agent sees after a tool runs — useful for scrubbing sensitive output before it enters the model's context window:
+
+```typescript
+PostToolUse: [{
+  matcher: 'Bash',
+  hooks: [async ({ toolOutput }) => ({
+    hookSpecificOutput: {
+      updatedToolOutput: toolOutput.replace(/sk-[a-zA-Z0-9]{32,}/g, '[REDACTED]'),
+    },
+  })],
+}]
+```
+
+The complete event taxonomy from the SDK covers 30 named hook events spanning session lifecycle, prompt handling, tool execution, subagent coordination, file changes, and notifications. The key events for production hardening are `PreToolUse` (block dangerous calls), `PostToolUse` (scrub output), `Stop` (inject follow-up context), and `SubagentStop` (gate sub-agent results). (Source: packet-A, §5)
+
+## Spawning sub-agents from within the SDK
+
+The `Agent` tool is available in SDK sessions just as it is in interactive sessions. Claude can spawn named sub-agents — isolated agent contexts with their own tool sets, models, and system prompts — and collect their results:
+
+```typescript
+// The parent agent can do this autonomously if Agent is in allowedTools:
+for await (const message of query({
+  prompt: `
+    Dispatch two sub-agents:
+    1. An "Auditor" that reads all TypeScript files and lists type errors.
+    2. A "Fixer" that takes the Auditor output and applies corrections.
+    Run them sequentially. Return the list of files changed.
+  `,
+  allowedTools: ['Read', 'Glob', 'Grep', 'Edit', 'Agent'],
+  maxTurns: 40,
+})) { /* ... */ }
+```
+
+Sub-agents added in version 2.1.172 can themselves spawn sub-agents, up to five levels deep. Each level is an isolated context — only the final summary returns to the parent, not intermediate tool outputs. This isolation is what makes hierarchical delegation safe: a sub-agent's exploratory file reads do not fill the parent's context window. (Source: packet-B, §4)
+
+<Callout type="tip" title="Match model to task tier in sub-agents">
+In a multi-agent pipeline, assign a cheaper, faster model to mechanical sub-agents — verification gates, file linting, test running — and reserve the more capable model for planning and synthesis. The `model` field in sub-agent frontmatter (`.claude/agents/`) controls this per agent type. The cost difference compounds across hundreds of sub-agent invocations. (Source: packet-E, F-14)
+</Callout>
+
+## Cost and session management
+
+Two fields on every `query()` call prevent runaway spend:
+
+- `maxTurns` — caps the number of tool-use rounds. A tight codebase task rarely needs more than 20.
+- `maxBudgetUsd` — halts the loop when cumulative token cost crosses the threshold. The `ResultMessage` will have `subtype: 'error_max_budget_usd'` so you can surface this cleanly to the caller.
+
+The `sessionId` in each `ResultMessage` lets you resume a session in a later call — the model picks up with the full context intact. This is how you implement multi-turn agents that persist across HTTP requests or process restarts:
+
+```typescript
+let sessionId: string | undefined
+
+// First turn
+for await (const msg of query({ prompt: 'Analyze the codebase.', settingSources: ['project'] })) {
+  if (msg.type === 'result') sessionId = msg.sessionId
+}
+
+// Later turn — model has full context of the first turn
+for await (const msg of query({
+  prompt: 'Now generate a refactoring plan based on what you found.',
+  sessionId,
+  settingSources: ['project'],
+})) { /* ... */ }
+```
+
+Sessions accumulate tokens rapidly with file-heavy tasks — a large `Read` call can cost thousands of tokens. Context compaction (`autoCompactEnabled: true` in settings) summarises older history automatically when the window fills. The SDK emits a `compact_boundary` `SystemMessage` when compaction occurs; you can hook `PreCompact` and `PostCompact` to log or inspect the boundary. (Source: packet-A, §1)
+
+## Connecting MCP servers
+
+MCP servers extend the agent's tool surface beyond the built-in set. Pass them directly in the `mcpServers` option:
+
+```typescript
+for await (const message of query({
+  prompt: 'Search our GitHub repo for all TODOs tagged with security.',
+  mcpServers: {
+    github: {
+      command: 'npx',
+      args: ['-y', '@modelcontextprotocol/server-github'],
+      env: { GITHUB_PERSONAL_ACCESS_TOKEN: process.env.GITHUB_TOKEN ?? '' },
+    },
+  },
+})) { /* ... */ }
+```
+
+MCP tools appear in permission rules and hook matchers as `mcp__<server>__<action>`. You can pre-approve specific MCP calls in `allowedTools` or block them entirely in hook `PreToolUse` matchers. The pattern `^mcp__` (treated as a regex because it contains `^`) matches every MCP tool across all connected servers — useful for a blanket MCP audit log. (Source: packet-A, §14)
+
+The MCP ecosystem has grown rapidly: as of June 2026, over 13,000 public servers are tracked across major directories, with official vendor-maintained servers for GitHub, Figma, Stripe, Supabase, Linear, Notion, Cloudflare, and dozens more. (Source: packet-B, §2.1)
+
+## A minimal production pattern
+
+Pulling the pieces together, here is a self-contained pattern that is safe to deploy in a server context:
+
+```typescript
+import { query } from '@anthropic-ai/claude-agent-sdk'
+
+async function runCodeAgent(userPrompt: string): Promise<string> {
+  const allowedTools = [
+    'Read', 'Glob', 'Grep',
+    'Edit', 'Write',
+    'Bash(pnpm typecheck)',
+    'Bash(pnpm test)',
+    'Bash(pnpm lint)',
+  ]
+
+  for await (const msg of query({
+    prompt: userPrompt,
+    model: 'claude-sonnet-4-5',
+    permissionMode: 'dontAsk',
+    allowedTools,
+    maxTurns: 25,
+    maxBudgetUsd: 2.00,
+    settingSources: ['project'],
+    hooks: {
+      PreToolUse: [{
+        matcher: 'Bash',
+        hooks: [async ({ toolInput }) => {
+          const cmd = typeof toolInput.command === 'string' ? toolInput.command : ''
+          // Never allow git push in automated context
+          if (cmd.startsWith('git push')) {
+            return { hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: 'git push is not permitted in automated mode.' } }
+          }
+          return { hookSpecificOutput: { permissionDecision: 'allow' } }
+        }],
+      }],
+    },
+  })) {
+    if (msg.type === 'result') {
+      if (msg.subtype !== 'success') throw new Error(`Agent stopped: ${msg.subtype}`)
+      return msg.result ?? ''
+    }
+  }
+  throw new Error('No result message received')
+}
+```
+
+The pattern combines `dontAsk` mode (no prompts) with a narrow `allowedTools` list (only typecheck, test, and lint Bash calls allowed), a `PreToolUse` hook as a final backstop, and explicit `maxTurns` and `maxBudgetUsd` guards. It loads project settings so CLAUDE.md conventions apply. It converts the streaming iterator into a single resolved string.
+
+## Effort and thinking depth
+
+The `effortLevel` option (`'low' | 'medium' | 'high' | 'xhigh' | 'max'`) controls how many thinking tokens the model uses per turn. Higher effort produces better results on complex reasoning tasks at higher cost. For mechanical tasks — running lint, collecting file paths, executing tests — `'medium'` is usually sufficient. For planning, architecture review, or code synthesis, `'high'` or `'xhigh'` is worth the cost. (Source: packet-A, §1)
+
+`effortLevel` is distinct from extended thinking (which produces visible chain-of-thought blocks in the response). They can be combined independently.
+
+## Recap
+
+The Agent SDK embeds Claude Code's multi-turn loop in your application. The loop runs until Claude produces a response with no tool calls; each turn dispatches tools in parallel (read-only) or sequentially (write), injects results, and feeds back to the model. `query()` is the entry point; `maxTurns` and `maxBudgetUsd` are the safety guards you should always set. `settingSources: ['project']` loads your CLAUDE.md and settings so the agent knows your codebase conventions. Hook callbacks in `PreToolUse` are the right place for in-process guardrails — blocking dangerous commands, scrubbing sensitive output, enforcing policies without shell scripts. Sub-agents extend the pattern hierarchically; match model tier to task complexity at each level to keep cost in proportion to the work.
+
+The next chapter covers MCP servers in depth — how to build one, the tool/resource/prompt primitives, the TypeScript and Python SDKs, and how the broader ecosystem connects your agent to the long tail of SaaS platforms and developer tools.

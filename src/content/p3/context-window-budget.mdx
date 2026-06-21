@@ -1,0 +1,176 @@
+# The context window & its budget
+
+The context window is the entire working memory Claude has for a session — everything it can see at once. This chapter maps what fills that space, shows how quickly each category grows, and gives you concrete strategies to spend the budget where it earns the most.
+
+## What lives in the context window
+
+Every Claude session is backed by an **append-only message array**. Nothing is ever silently removed from it mid-session — entries only accumulate. When the model replies to you, it has read every byte in that array. When a tool runs and returns output, that output is appended. The array is the complete shared state.
+
+Four categories of content compete for space in it:
+
+| Category | Examples | Token range |
+|---|---|---|
+| **System block** | System prompt, `CLAUDE.md`, tool schemas | 500 – 50 000 |
+| **Conversation turns** | Your messages, Claude's replies | 50 – 5 000 per turn |
+| **Tool outputs** | File reads, Bash stdout, search results | 100 – 30 000 per call |
+| **Injected context** | Memory files, skill content at invocation | 200 – 10 000 |
+
+The sim below lets you see these forces in action. Switch between "Lean session" and "Bloated session", drag the turn slider, and watch the fill bar approach the compaction threshold.
+
+<ContextWindowSim />
+
+<Callout type="tip" title="File reads are the biggest budget eater">
+A single `Read` of a 500-line TypeScript file costs around 4 000 – 6 000 tokens. Ask Claude to read ten files in one turn and you can burn 40 000 – 60 000 tokens before a single line of work has happened. This is the most common source of unexpectedly short sessions.
+</Callout>
+
+## Anatomy of the system block
+
+The system block is loaded once — at the very first request — and then **prompt-cached** for every subsequent turn. Prompt caching means the model does not re-encode those tokens on turns 2, 3, 4 … The repeated read is cheap. The first read is not.
+
+What lands in the system block:
+
+```
+System block
+├── Built-in engineering instructions   (Claude Code defaults)
+├── Tool schemas (all active tools)     (each tool definition takes 100–500 tokens)
+└── Output-style overrides              (if any)
+
+Injected as user message (prompt-cached):
+├── CLAUDE.md (project root)
+└── CLAUDE.md (parent dirs, ~/.claude)  (stacked on top)
+```
+
+Tool schemas are a hidden cost. Every MCP server you connect adds its tool definitions to the system block. A server exposing 20 tools at 300 tokens each contributes 6 000 tokens before you type a word. Claude Code mitigates this with **deferred tool loading** (`ToolSearch`): MCP tool schemas are not loaded upfront; they are fetched on-demand when Claude searches for them. This keeps the system block lean for servers you rarely use.
+
+<Callout type="note" title="CLAUDE.md is injected fresh, then cached">
+CLAUDE.md content is technically injected as a user message (not in the system prompt itself), but the harness caches it after the first request so subsequent turns pay negligible cost to re-send it. What matters for budgeting is size: a 400-line CLAUDE.md costs around 6 000 – 8 000 tokens, static for the session.
+</Callout>
+
+## How turns accumulate
+
+After the system block, every turn in the session is appended in chronological order. The model sees the full history every time it replies — there is no sliding window that drops older turns automatically.
+
+<Mermaid chart={`graph LR
+    S["System block<br/>(static, cached)"]
+    T1["Turn 1<br/>User prompt"]
+    T2["Turn 2<br/>Assistant reply"]
+    T3["Turn 3<br/>Tool result"]
+    T4["Turn 4<br/>Assistant reply"]
+    T5["Turn 5<br/>User follow-up"]
+    T6["Turn N<br/>…"]
+
+    S --> T1 --> T2 --> T3 --> T4 --> T5 --> T6
+
+    style S fill:var(--tw-prose-body),color:#fff
+    style T3 fill:var(--warning),color:#000
+`} />
+
+Turns grow the context in three ways:
+
+1. **Conversation breadth** — long replies, long user messages.
+2. **Tool verbosity** — stdout from Bash commands, search result dumps, file contents.
+3. **Repetition** — asking Claude to re-read the same file twice stores two copies.
+
+The most effective lever is controlling tool verbosity. A `find src -name '*.ts'` that dumps 300 filenames is cheaper than a `Read` of a single large file. Prefer targeted over broad.
+
+## The compaction threshold
+
+When the total token count approaches the model's context limit, Claude Code triggers **automatic compaction**. The harness summarises the older portion of the conversation, replaces those turns with a compact digest, and emits a `compact_boundary` system message. The session continues from that boundary with breathing room.
+
+Compaction is intentionally transparent — the loop keeps going. But it is **lossy**: fine details from early turns (exact values, verbatim outputs) are replaced by summaries. If a later step depends on a precise value from an early step, write it to a file on disk before context fills up.
+
+```
+Before compaction:
+  [system] [T1] [T2] [T3] [T4] [T5] [T6] [T7] [T8] → 90 % full
+
+After compaction:
+  [system] [compact_boundary: summary of T1–T6] [T7] [T8] → 30 % full
+```
+
+You can also trigger compaction manually with `/compact` before it happens automatically — useful when you want to summarise a completed sub-task before starting the next one, keeping the summary accurate while full detail is still available.
+
+<Callout type="warning" title="Compaction is lossy — write key results to disk">
+After compaction the model cannot recall the verbatim text of early tool outputs. If a later step needs an exact string from an early file read or Bash result, instruct Claude to write it to a file first.
+</Callout>
+
+## Reading the budget
+
+Here is how the token categories sum in a realistic session:
+
+```
+System block:
+  Built-in instructions + tool schemas   ~3 000 tok
+  CLAUDE.md (medium complexity)          ~6 000 tok
+  ─────────────────────────────────────  ~9 000 tok (static)
+
+20-turn session, mixed reads and replies:
+  10 × conversation turn (avg 600 tok)    6 000 tok
+  6  × file read (avg 5 000 tok)         30 000 tok
+  4  × search result (avg 2 000 tok)      8 000 tok
+  ─────────────────────────────────────  44 000 tok (dynamic)
+
+Total:                                   ~53 000 tok
+```
+
+On a 100 000-token budget, that 20-turn session uses about half the window. Add a large CLAUDE.md (15 000 tokens), several extra tool schemas, and a few code-heavy file reads, and the same session hits 80 % — near the compaction threshold.
+
+The takeaway: **the system block is fixed overhead; tool outputs are the variable you control session-to-session**.
+
+## Strategies for a healthy budget
+
+### Keep the system block lean
+
+- Trim `CLAUDE.md` to what future-you actually needs. Remove resolved bugs, one-off notes, and content already captured in skills.
+- Use **Skills** for large procedures and workflows. Skill content loads only when the skill is invoked — not on every turn. A 2 000-token procedure sitting in a skill costs nothing until you call it.
+- Disable MCP servers you are not using for a session. Each one contributes tool schemas even if you never call it.
+
+### Be surgical with file reads
+
+- Ask Claude to read specific line ranges rather than whole files when only a section matters.
+- When exploring an unfamiliar codebase, ask Claude to use `Grep` and `Glob` first (cheap — returns file names and match counts) before committing to `Read` (expensive — returns full content).
+- If Claude needs to refer to a large file multiple times, have it extract the relevant sections into a temporary file that costs far fewer tokens to re-read.
+
+### Prefer writing results to disk over keeping them in context
+
+- When a long Bash output will be needed later, pipe it to a file: `bash command > /tmp/result.txt`. Claude can then read specific lines rather than holding the full output in the message array.
+- This pattern also survives compaction: disk is not subject to the lossy summary.
+
+### Use `/compact` strategically
+
+- Before switching from exploration to implementation, compact the research phase. The summary preserves decisions without preserving every file dump.
+- Before a very large file write (which will itself consume tokens), compact earlier conversation to free space.
+
+### Watch the fill bar
+
+In the Claude Code CLI, `/context` shows the current token count and fill ratio. Glance at it before long autonomous runs. If you are already at 60 % after setup, consider whether the task will complete before hitting the threshold — or whether you should compact first.
+
+<Callout type="note" title="Auto-compact is on by default">
+`autoCompactEnabled` defaults to `true` in settings. You can disable it with `DISABLE_AUTO_COMPACT=1` or `autoCompactEnabled: false` — but then you are responsible for noticing when the context is full and compacting manually. Most users should leave it on.
+</Callout>
+
+## What engineers should instrument
+
+If you are embedding the Agent SDK, the `ResultMessage` carries token usage:
+
+```typescript
+import { query } from '@anthropic-ai/claude-agent-sdk'
+
+for await (const msg of query({ prompt: '...', maxTurns: 20 })) {
+  if (msg.type === 'result') {
+    const { inputTokens, outputTokens, cacheReadTokens } = msg.usage
+    console.log(`input: ${inputTokens}, output: ${outputTokens}, cache hits: ${cacheReadTokens}`)
+  }
+}
+```
+
+The `cacheReadTokens` value tells you how much of the system block is being served from cache (good: cheap) versus re-encoded (less good: full cost). A healthy session shows high cache hits after turn one.
+
+For production pipelines, log usage per `ResultMessage` and alert when average input tokens per session climbs — it is an early signal that system block bloat or overly verbose tool calls are degrading cost efficiency.
+
+## Recap
+
+The context window is an append-only bucket. The system block (static overhead: instructions, `CLAUDE.md`, tool schemas) is cached after the first request. Conversation turns, tool outputs, and injected memory fill the remainder turn by turn. Compaction summarises older history when the bucket approaches its limit — it is automatic and lossy.
+
+Your levers: keep the system block intentionally small; be surgical about which files you ask Claude to read and how many times; write durable results to disk rather than holding them in the message array; use `/compact` before pivoting to a new sub-task.
+
+The next chapter builds on this foundation to explore **context engineering** — how to deliberately shape what enters the window, in what order, and at what cost, to get reliable, high-quality behaviour from long autonomous sessions.

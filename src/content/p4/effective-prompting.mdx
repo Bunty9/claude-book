@@ -1,0 +1,314 @@
+# Effective prompting for Claude
+
+A better prompt is not longer — it is more specific. This chapter distills the patterns that reliably produce better output: how to give Claude the right context up front, how to use examples as a precision instrument, and how to structure instructions so the model can parse them without guessing.
+
+## Why prompts matter even with a smart model
+
+Claude is a strong reasoner, but it is working with whatever information you give it. A vague prompt does not unlock less capability — it forces the model to fill the gaps itself, which means it makes assumptions where you wanted decisions, and hedges where you wanted commitment.
+
+The prompting patterns in this chapter are not tricks. They are ways of transferring information more completely — from your head into Claude's context window — so that Claude can spend its reasoning budget on the actual problem rather than reconstructing what you meant.
+
+<Callout type="note" title="These patterns work across Claude interfaces">
+Whether you are typing into Claude.ai, running Claude Code in a terminal, or calling the API from an application, the same prompting principles apply. The chapter examples use natural language, but engineers will see how the same ideas translate directly to system prompts and API calls.
+</Callout>
+
+## The anatomy of an effective prompt
+
+Most prompts that produce weak results are missing one or more of three ingredients:
+
+1. **A clear task** — what you want Claude to produce
+2. **Sufficient context** — what Claude needs to know to produce it well
+3. **Output constraints** — format, length, tone, or other properties the result must have
+
+A prompt that contains all three is specific. Prompts that are missing one are ambiguous. Prompts that are missing two are vague.
+
+<Mermaid chart={`graph TD
+    A["Your intent"] --> B["Task — what to produce"]
+    A --> C["Context — what Claude needs to know"]
+    A --> D["Constraints — format, length, tone"]
+    B --> E["Specific prompt"]
+    C --> E
+    D --> E
+    E --> F["Predictable, high-quality output"]
+
+    style E fill:var(--tw-prose-body),color:#fff
+    style F fill:var(--tw-prose-body),color:#fff
+`} />
+
+The three-ingredient model sounds simple, but most people write prompts that have a task and skip the other two. The sections below address each in turn.
+
+## Specificity: the task itself
+
+The single most common prompt failure is describing a category of output instead of the specific output you want.
+
+| Vague | Specific |
+|---|---|
+| "Write an email to the client" | "Write a two-paragraph email to the client explaining why the deadline moved by one week. Be direct and do not over-apologise." |
+| "Summarise this document" | "Summarise this document in three bullet points. Each bullet should be one sentence and suitable for a non-technical executive." |
+| "Fix this bug" | "The function `parseDate` crashes when the input is an empty string. Fix it without changing the function signature." |
+| "Improve this code" | "Refactor this function to remove the nested `if` blocks. Prefer early returns. Do not change observable behaviour." |
+
+Notice what is different in the specific versions: named output (bullet points, email), a stated audience (non-technical executive, client), explicit constraints (two paragraphs, one sentence per bullet), and named behaviour boundaries (do not change the function signature).
+
+### Name the output format explicitly
+
+Claude can produce many formats — prose, lists, JSON, Markdown, YAML, code — but it defaults to whatever seems most natural for the task. Name the format you want rather than hoping Claude infers it.
+
+```
+Bad:  "Tell me about the database schema."
+Good: "Describe the database schema as a Markdown table with columns:
+       table name, primary key, relationships, notes."
+```
+
+```
+Bad:  "Analyse this feedback and give me insights."
+Good: "Analyse this customer feedback. Respond with a JSON object
+       containing two keys: 'themes' (array of strings, max 5) and
+       'recommended_actions' (array of strings, max 3)."
+```
+
+### Set a length target
+
+Without a length signal, Claude calibrates to what feels complete for the task type. This is often longer than you need. A length target is not a hard constraint — it is a signal about desired depth.
+
+```
+"Explain how the agent loop works. Two paragraphs, plain English, no
+ code examples."
+```
+
+```
+"Write a commit message for this diff. One line, under 72 characters,
+ imperative mood."
+```
+
+## Context: what Claude needs to know
+
+Specificity about the task tells Claude what to produce. Context tells Claude how to produce it correctly. The most useful context is:
+
+- **Domain knowledge** Claude does not have — your project conventions, your team's terminology, business rules that are not visible in the files
+- **The audience or reader** — who will consume the output and what they already know
+- **Constraints on the solution space** — what has already been tried, what is off-limits, which approach you prefer
+
+### Give the background, not the backstory
+
+Context should be dense and relevant. Do not narrate how you arrived at the problem — describe the problem state directly.
+
+```
+Weak context:
+"So I was working on our API and I've been dealing with this issue for
+ a while. We have a rate limiter that was added last year..."
+
+Better context:
+"The rate limiter uses a Redis sliding window. Keys are prefixed
+ RATE:{userId}:{minute}. The bug: keys are not expiring. Current TTL
+ is set on creation but not refreshed on access."
+```
+
+The second version gives Claude the data structures, the mechanism, and the symptom — everything it needs. The first gives history.
+
+### State what you already know or have tried
+
+One of the highest-leverage pieces of context is the approaches that did not work. Without it, Claude often suggests what you already tried.
+
+```
+"I've already tried: (1) switching to `useEffect` with an empty
+ dependency array — it still runs on every render. (2) wrapping
+ the callback in `useCallback` — no change. The render is triggered
+ by a context update upstream."
+```
+
+With that context, Claude skips the obvious paths and reasons from where you actually are.
+
+<Callout type="tip" title="For engineers: CLAUDE.md as standing context">
+If you use Claude Code in a codebase regularly, the best context you can provide is a well-maintained `CLAUDE.md`. It loads at the start of every session so you do not have to re-explain conventions, schema highlights, or known gotchas each time. Think of it as a persistent context prefix. Invest effort in it once; every future prompt benefits.
+</Callout>
+
+## Examples: the precision instrument
+
+Examples are the most underused prompting technique. They communicate things that instructions struggle to: tone, structure, level of detail, and the exact boundary between what counts as correct and what does not.
+
+The technical term for including examples in a prompt is **few-shot prompting** — you give the model one or more input–output pairs before the actual task, and the model generalises the pattern to the new input.
+
+### When to use examples
+
+Use examples when:
+
+- The output format is unusual or highly specific
+- Tone is important and hard to describe in words
+- You have had to correct Claude's interpretation multiple times on similar tasks
+- The task involves classification with non-obvious category boundaries
+
+### One good example beats five paragraphs of instructions
+
+```
+Bad (description only):
+"Write in a concise, direct style. Avoid passive voice. No fluff.
+ Use short sentences. No filler words at the start of sentences.
+ Get to the point immediately."
+
+Good (description + example):
+"Write in a concise, direct style — like this:
+
+ Example output:
+ 'The cache miss rate jumped to 40% after the deploy. Root cause:
+  the new Redis key prefix breaks the hot-path lookup. Rollback
+  restores it immediately; the proper fix needs a migration.'
+
+ Now write a similar incident summary for the following data: ..."
+```
+
+The example does in thirty words what five bullet points cannot: it demonstrates the sentence rhythm, the level of technical detail, and the absence of preamble.
+
+### Structure your examples clearly
+
+When your prompt includes examples, label them so Claude knows what is input and what is output.
+
+````
+Input:
+  "the user clicked save but nothing happened"
+
+Output:
+  Category: UI / Save
+  Severity: Medium
+  Title: Save action non-responsive
+  Steps to reproduce: [describe exact steps]
+
+---
+
+Now classify this report:
+  "when i log in from mobile the sidebar disappears"
+````
+
+The separator (`---`) makes the transition from examples to the real task unambiguous.
+
+### Negative examples for boundary cases
+
+If there is a common mistake you want Claude to avoid, show it explicitly.
+
+```
+"Respond with factual claims only. Do not speculate.
+
+ CORRECT:  'The function returns null when the input is empty.'
+ INCORRECT: 'The function probably returns null for empty inputs,
+             though this may depend on the version.'"
+```
+
+## Structure: making instructions parseable
+
+Long prompts often fail not because they lack information, but because Claude cannot easily parse which parts are instructions versus context versus examples. Structure helps.
+
+### Use headers or numbered steps for multi-part tasks
+
+If a task has a clear sequence, number the steps:
+
+```
+Follow these steps in order:
+
+1. Read the file `src/auth/session.ts`.
+2. Identify every place where the session token is written to storage.
+3. For each location: note the variable name, the storage key, and
+   whether TTL is set at write time.
+4. Produce a Markdown table: columns are File, Line, Storage Key, TTL Set.
+```
+
+Numbered steps produce predictable, ordered outputs. Prose descriptions produce prose outputs — which may cover the same ground but in a different order and harder to verify.
+
+### Separate context from instructions
+
+When a prompt mixes context and instructions, Claude can lose track of which sentences are background and which are directives. A simple separator makes both sections cleaner.
+
+```
+CONTEXT
+-------
+The payment service uses Stripe. Webhook events arrive at /api/webhooks/stripe.
+Signature verification uses the Stripe-Signature header.
+Failed verifications should return 400, not 500.
+
+TASK
+----
+Review the webhook handler in src/api/webhooks/stripe.ts and identify
+any cases where a verification failure could return a 5xx status.
+```
+
+### Chain of thought for complex reasoning tasks
+
+For tasks that require multi-step reasoning — debugging a tricky bug, designing an architecture, reviewing a security posture — explicitly ask Claude to reason before answering. This is sometimes called **chain-of-thought prompting**.
+
+```
+"Before giving your answer, reason through it step by step.
+ Show your reasoning, then give the conclusion."
+```
+
+Or, for a more structured version:
+
+```
+"Think through this in three parts:
+ 1. What do the symptoms tell us?
+ 2. What are the plausible causes?
+ 3. Which cause is most likely and why?
+
+ Then state your recommendation."
+```
+
+Asking Claude to externalize its reasoning tends to produce more accurate conclusions — and it lets you catch reasoning errors before they become recommendations you act on.
+
+<Callout type="warning" title="Do not ask Claude to skip the reasoning">
+Prompts like "give me the answer directly, skip the explanation" are fine for simple lookups. For hard reasoning tasks, they often produce confident-sounding but less reliable answers. The reasoning is not decoration — it is part of how Claude gets to a good answer.
+</Callout>
+
+## The PromptLab — try it now
+
+The widget below scores your prompt across four dimensions — specificity, context, examples, and structure — and shows you where to improve. Load a curated before/after pair to see the same task written weakly and well, then try editing it.
+
+<PromptLab />
+
+## Putting it together: a worked example
+
+Here is the same task written as a weak prompt, then rebuilt using the patterns above.
+
+**Weak:**
+```
+Can you look at my code and make it better?
+```
+
+**Rebuilt:**
+```
+I have a TypeScript function that fetches user data from our Postgres
+database. It is slow on reads over 10,000 rows. I have already added
+an index on user_id — no improvement. I have not tried pagination yet.
+
+Read the function in src/services/user.service.ts, then:
+1. Identify the specific query bottleneck (explain the WHERE clause
+   and any N+1 patterns you see).
+2. Propose two fixes, ordered from lowest to highest implementation
+   effort.
+3. Show the rewritten query for the lowest-effort fix.
+
+Output format: Markdown with a short diagnosis paragraph, then a
+numbered list of fixes, then the code block for fix 1.
+Do not change the function signature.
+```
+
+The rebuilt version delivers: a named file, a stated symptom, what has already been tried, a sequenced multi-step task, an output format, and a constraint. That is all three ingredients — task, context, and constraints — plus a structure that makes the sequence unambiguous.
+
+## Quick reference: the prompting checklist
+
+Before submitting a complex prompt, run through these questions:
+
+- **Task:** Have I named the specific output, not just a category of output?
+- **Format:** Have I specified the format (prose, list, JSON, code, table)?
+- **Length:** Have I given a length signal if brevity or depth matters?
+- **Context:** Have I told Claude what it needs to know that is not in the attached files?
+- **Tried:** Have I mentioned what I have already tried, if relevant?
+- **Audience:** Does Claude know who the output is for?
+- **Steps:** For multi-part tasks, have I numbered the steps?
+- **Constraints:** Have I listed what Claude should not do or change?
+- **Examples:** For unusual formats or tone, have I shown at least one example?
+
+You do not need all nine for every prompt. A one-sentence clarification request needs none of them. A complex refactoring task benefits from most of them.
+
+## Recap
+
+Effective prompting is precise information transfer: task, context, and constraints delivered clearly enough that Claude does not need to guess. Specificity defines the output. Context gives Claude what it cannot infer. Examples calibrate tone, format, and boundary cases more precisely than instructions can. Structure makes multi-step tasks parseable and sequenced.
+
+The patterns here apply to any interface — chat, terminal, API — and at any complexity level from a quick question to a multi-thousand-token system prompt. The next chapter looks at how to take this further by writing **specs and briefs** that hand off complex work to Claude reliably, without needing to be present for every step.

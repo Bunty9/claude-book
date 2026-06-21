@@ -1,0 +1,238 @@
+# Memory — CLAUDE.md & the remember pattern
+
+By default, Claude Code remembers nothing between sessions. Each new session opens with a blank slate — no knowledge of your project's architecture, your team's conventions, or the decisions made last week. This chapter covers the three mechanisms that break that amnesia: `CLAUDE.md` files for standing context, auto-memory for cross-session facts, and the `/remember` pattern for explicit, durable knowledge capture. By the end you will know how each works, when to reach for each one, and how to combine them into a memory system that makes every session feel like a continuation of the last.
+
+## Why session amnesia matters
+
+The agent loop is append-only within a session. Everything Claude reads, every file it edits, every decision it makes — all of it accumulates in the context window and is available for reasoning until the session ends. The moment a session closes, none of that survives. Tomorrow's session starts with the same blank model that has never heard of your codebase.
+
+This has a cascading effect. Without standing context, Claude has to re-explore the codebase from first principles at the start of every task. It re-discovers conventions it violated last session. It asks questions it already answered. The productive hours of deep context get spent on re-orientation.
+
+The three memory mechanisms below exist to solve different parts of this problem.
+
+<Callout type="note" title="Memory vs. context">
+Memory mechanisms don't expand the context window — they populate it. Each mechanism is really a way of getting the right information into the context at the start of a session, so Claude can reason about it without burning turns re-discovering it.
+</Callout>
+
+## CLAUDE.md — the standing brief
+
+`CLAUDE.md` files are Markdown files that Claude Code loads automatically at the start of every session. Their content is injected as a user message after the system prompt, before your first prompt arrives. They are the primary way to give Claude persistent, session-spanning knowledge about your project.
+
+### Where they live and how they load
+
+Claude Code looks for `CLAUDE.md` files in a layered set of locations, loading all that match:
+
+```
+~/.claude/CLAUDE.md            personal: applies to every project on this machine
+<project-root>/CLAUDE.md       project: checked in, applies to the whole team
+<subdirectory>/CLAUDE.md       local: applies when cwd is in or below that subdirectory
+```
+
+All matching files load together. Subagents also load CLAUDE.md, with two exceptions: the built-in `Explore` and `Plan` subagents skip it deliberately, to keep research fast.
+
+The `claudeMdExcludes` settings key accepts glob patterns to skip specific files — useful when a repo contains auto-generated directories that happen to have CLAUDE.md files you don't control.
+
+### What to put in CLAUDE.md
+
+CLAUDE.md is most valuable for facts that are both stable and consequential — things Claude would need to re-discover on every session start if you didn't state them upfront.
+
+Effective CLAUDE.md content:
+
+- **Architecture summary** — what the system is, which repos are active, how they connect
+- **Technology decisions** — language version, framework choices, patterns to follow
+- **Invariants and constraints** — "soft delete everything", "use GCS not S3", "no AI attribution in commits"
+- **Known sharp edges** — production bugs, tricky environmental facts, gotchas that trip up fresh explorations
+- **Command reference** — how to run tests, start the dev server, apply migrations
+
+Content that belongs elsewhere:
+
+- Step-by-step procedures → use Skills (lazy-loaded, not in every request)
+- Per-session context like today's PR list → use a `SessionStart` hook (dynamic, fresh each session)
+- Ephemeral state like current branch → don't persist; let Claude discover it
+
+### The token cost of standing context
+
+Every line of CLAUDE.md is injected on every request. Longer files cost more tokens — both in spend and in context window. Claude Code caches CLAUDE.md content after the first request of a session (prompt caching), so within a session the incremental cost drops sharply. But the first injection still counts.
+
+The practical consequence: write CLAUDE.md for density. Each line should earn its place. Architecture docs that run to thousands of words should live in separate files that CLAUDE.md links to, not inline in CLAUDE.md itself.
+
+### Monorepo layouts
+
+In a monorepo with multiple active services, stack CLAUDE.md files by scope:
+
+```
+/CLAUDE.md              repo-wide conventions (CI, git, RBAC patterns)
+/services/api/CLAUDE.md API-specific schema, routes, sharp edges
+/services/web/CLAUDE.md FE component patterns, theming, state management
+```
+
+When Claude works in `/services/api/`, it loads both the root and the service-level file. When working in `/services/web/`, it loads the root plus the web file. Each layer adds only the context relevant to that scope, without polluting sessions in other directories.
+
+## Auto-memory — cross-session fact persistence
+
+Auto-memory is Claude Code's built-in mechanism for persisting structured facts across sessions without manual curation. It is enabled by default (`autoMemoryEnabled: true` in settings).
+
+When auto-memory is active, Claude reads relevant files from `~/.claude/memory/` at session start and writes updated facts as it learns them during the session. The directory path is configurable via `autoMemoryDirectory`.
+
+### What auto-memory stores
+
+Auto-memory is most useful for preferences and procedural facts that Claude learns through interaction — things you correct once and want remembered forever. Examples from real usage:
+
+- Your preferred commit message format
+- That you always want tests before implementation on this project
+- That `pnpm` is the package manager, not `npm`
+- That the staging environment was torn down and shouldn't be referenced
+
+These are the kind of low-friction corrections that feel tedious to re-state but are trivial to learn once.
+
+### Disabling auto-memory
+
+If you want strict control over what Claude knows between sessions — for security, compliance, or reproducibility — auto-memory can be disabled in two ways:
+
+```jsonc
+// ~/.claude/settings.json
+{ "autoMemoryEnabled": false }
+```
+
+or via the environment variable `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`. When disabled, no facts persist automatically; every session starts with only what CLAUDE.md and explicit memory files provide.
+
+## The /remember pattern — explicit, durable knowledge
+
+The `/remember` slash command (provided by the `remember` plugin) gives you explicit control over what gets persisted. Rather than trusting automatic extraction, you decide what matters and when to capture it.
+
+<Mermaid chart={`
+flowchart LR
+    A[Session ends\\nor key decision reached] --> B{Worth persisting?}
+    B -->|Yes| C["/remember: <fact>"]
+    B -->|No| D[Let it go]
+    C --> E[Saved to memory file]
+    E --> F[SessionStart hook\\ninjects at next open]
+    F --> G[Next session\\nstarts informed]
+`} />
+
+### What to /remember
+
+The pattern works best for:
+
+- **Architectural decisions with rationale** — not just "use GCS" but "use GCS not S3 because the SA key policy blocks new key creation"
+- **Prod-vs-dev divergence facts** — "CD runs `prisma migrate deploy`, not `db:seed`; seed-only rows never exist in prod"
+- **Operational gotchas** — "run `gcloud builds list` with `--region=asia-south1` or you'll see the wrong build pool"
+- **Preference feedback** — corrections to Claude's default behavior that you want applied from now on
+
+These are the notes a senior engineer would write in a runbook after a prod incident. The /remember pattern makes those notes automatically available to every future session.
+
+### How the remember plugin works
+
+The `remember` plugin (available via the Claude Code plugin marketplace) maintains a directory of dated log files and structured memory files. Two hooks drive it automatically:
+
+- A `PostToolUse` hook fires after tool calls and periodically extracts session highlights using a lightweight model, appending them to a dated log (`today-YYYY-MM-DD.md`).
+- A `SessionStart` hook reads the relevant memory files and injects a summary into context via `additionalContext`.
+
+This means the plugin can operate in fully automatic mode — you never need to type `/remember` manually if the automatic extraction captures what matters. You use the explicit command for decisions you want to make sure survive, regardless of whether the automatic pass catches them.
+
+### The memory file taxonomy
+
+A mature remember setup typically maintains three tiers:
+
+| File | Purpose | Lifecycle |
+|---|---|---|
+| `today-YYYY-MM-DD.md` | Daily working log; appended during the session | Archived weekly |
+| `archive.md` | Weekly roll-ups from daily logs | Grows indefinitely; queryable |
+| Structured fact files (`feedback_*.md`, `project_*.md`, `reference_*.md`) | Named, typed, durable facts | Explicitly authored; never auto-expire |
+
+The structured fact files are the most durable tier. Each has a name, type, and description so the injection system can select relevant ones without loading all 65 (or however many accumulate) into every session.
+
+## Composing the three layers
+
+The three mechanisms are complementary, not competing:
+
+<Mermaid chart={`
+flowchart TD
+    subgraph Static["Static (every session)"]
+        CM["CLAUDE.md\\nArchitecture, conventions,\\nsharp edges"]
+    end
+
+    subgraph Adaptive["Adaptive (session-to-session)"]
+        AM["Auto-memory\\nLearned preferences,\\nbehavioral corrections"]
+    end
+
+    subgraph Explicit["Explicit (on demand)"]
+        RP["/remember\\nDecisions, gotchas,\\nprod-vs-dev facts"]
+    end
+
+    Static --> Context["Session context"]
+    Adaptive --> Context
+    Explicit --> Context
+    Context --> Claude["Claude starts\\ninformed"]
+`} />
+
+A practical division of responsibility:
+
+- **CLAUDE.md** carries everything that would be true on a fresh clone by any engineer — repo structure, active services, conventions, command reference. Check it in. Keep it up to date when you change architecture.
+- **Auto-memory** carries preferences and procedural corrections that are personal or project-specific but don't need to be shared with the team. Let it run automatically.
+- **/remember** carries decisions, gotchas, and operational facts that you explicitly want durable. Use it after incidents, after significant architectural decisions, after any correction you've had to make more than once.
+
+## Living documentation: keeping CLAUDE.md accurate
+
+A CLAUDE.md that drifts from the codebase is worse than no CLAUDE.md. Stale facts mislead Claude in exactly the situations where correct facts matter most.
+
+<Callout type="warning" title="Update CLAUDE.md in the same change as the code">
+When you add a route, change the DB schema, remove a sharp edge, or introduce a new pattern that becomes load-bearing — update CLAUDE.md in the same commit. Don't leave it for a cleanup pass. The next session will read the stale version and reason from it.
+</Callout>
+
+Some teams treat CLAUDE.md maintenance as part of the definition of done for a feature PR. If the feature added a new module key, a new migration pattern, or a new sharp edge — the PR isn't complete until CLAUDE.md reflects it.
+
+### The sharp edges section is the most valuable part
+
+Sharp edges — known gotchas, prod traps, non-obvious invariants — are the highest-leverage content in a CLAUDE.md. They encode institutional knowledge that took an incident to learn. A fresh Claude session reading "the shadow DB is broken; hand-author SQL and insert a `_prisma_migrations` row manually" avoids a 20-minute debugging cycle that every previous session had to repeat.
+
+When you fix a sharp edge, delete the bullet. Leaving it as "fixed in PR #123" creates noise. When you discover a new one, add it immediately — the discovery context is exactly when the wording will be clearest.
+
+## A worked example: project onboarding
+
+To make this concrete, here is what a minimal but effective CLAUDE.md might look like for a two-service project:
+
+```markdown
+## Active repos
+
+- `api/` — Express + Prisma REST API, port 4000
+- `web/` — Next.js App Router, port 3000
+- `staging/` — ARCHIVED; do not start PRs here
+
+## Stack
+
+- Node 22 + pnpm (never npm). TypeScript strict, no `any`, no `as`.
+- Postgres 16 via Docker in dev; Cloud SQL in prod.
+- GCS for file storage — never import @aws-sdk in new code.
+
+## Dev commands
+
+```bash
+pnpm dev           # both services via concurrently
+pnpm db:push       # sync schema (dev only)
+pnpm db:migrate    # generate + apply migration (use when promoting)
+```
+
+## Known sharp edges
+
+- CD runs `prisma migrate deploy`, not `db:seed`. Seed-only rows
+  (Module, RolePermission defaults) never exist in prod. Add a
+  migration when you add a seed row that code relies on.
+- Never run `gcloud builds list` without `--region=asia-south1`.
+  The global pool shows smoke builds, not CD builds. Concluding
+  "CD didn't fire" from a global list is the recurring trap.
+```
+
+This fits in under 30 lines. It tells Claude which repos are active, what the stack constraints are, how to run the project, and the two most expensive prod traps the team has hit. Every session starts from this foundation without any re-exploration.
+
+## Recap
+
+Three mechanisms fill Claude's blank slate at session start:
+
+1. **CLAUDE.md** — static, team-shared, injected on every request. Write it for architecture, constraints, and sharp edges. Keep it accurate; stale facts mislead.
+2. **Auto-memory** — adaptive, personal, automatic. Let it capture preferences and behavioral corrections across sessions. Disable it if you need reproducibility.
+3. **/remember** — explicit, durable, on-demand. Use it for architectural decisions, operational gotchas, and any fact you've had to re-explain more than once.
+
+Together they let you delegate goals rather than instructions — because Claude already knows the how.
+
+**Next:** the [context window and compaction](/c/context-window-compaction) chapter covers what happens when sessions grow large, how auto-compaction works, and how to design tasks that stay within budget.

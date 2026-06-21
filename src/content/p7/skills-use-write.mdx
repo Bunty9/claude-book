@@ -1,0 +1,290 @@
+# Skills — using & writing
+
+Skills are Claude Code's mechanism for packaging repeatable expertise into a single slash command. This chapter shows you how to find skills worth installing, how to invoke them effectively, and — crucially — how to author your own so that team conventions, project launch recipes, and personal workflows survive from session to session without you re-explaining them.
+
+## What makes a skill different from CLAUDE.md
+
+Before diving into usage, it is worth being precise about how skills relate to the project instructions file most Claude Code users already know.
+
+`CLAUDE.md` is **eagerly loaded** — its full content lands in every request, whether or not it is relevant. That is fine for standing rules ("always use `pnpm`, never commit `.env`"), but it is wasteful for step-by-step procedures that you only need occasionally.
+
+A skill is **lazily loaded**. Its `SKILL.md` body is invisible to Claude until the skill is invoked. This keeps your base context small and your per-request cost low. Skills are also namespace-isolated: two skills with the same name in different scopes do not collide — the closest wins.
+
+<Callout type="note" title="Skills follow the Agent Skills open standard">
+Claude Code's skill format is based on the [agentskills.io](https://agentskills.io) open standard, which means skills you write for Claude Code can (in principle) be understood by other tools that adopt the same specification. Claude Code adds its own extensions — dynamic context injection, subagent execution, tool restrictions — on top of the base format.
+</Callout>
+
+The mental model:
+
+| Mechanism | Loaded | Best for |
+|---|---|---|
+| `CLAUDE.md` | Every request | Standing rules, project conventions, must-knows |
+| Skill | On invocation only | Procedures, recipes, step-by-step workflows |
+| Custom output style | Session start only | Communication register (terse, educational, etc.) |
+| Hook | On lifecycle events | Enforcement, side effects, context injection |
+
+## Finding skills to use
+
+### Bundled skills (always available)
+
+Claude Code ships a set of bundled skills that are pre-installed and require no setup:
+
+- `/code-review` — structured diff analysis at configurable depth
+- `/debug` — systematic fault isolation
+- `/run` — infers how to launch your project from `README`, `package.json`, or `Makefile`
+- `/verify` — runs the app and observes real behaviour to confirm a fix
+- `/batch` — fans out a task across many files in parallel
+- `/deep-research` — multi-source web research with adversarial cross-checking
+- `/loop` — repeats a prompt or skill on an interval
+
+These cover the most common repeatable tasks out of the box. Start here before looking elsewhere.
+
+<Callout type="tip" title="A project skill with the same name overrides a bundled one">
+If your project has a `.claude/skills/run/SKILL.md`, it shadows the bundled `/run`. This is intentional — project-specific launch recipes are more accurate than the generic inference logic.
+</Callout>
+
+### The plugin marketplace
+
+Most skills worth installing arrive via plugins. A plugin is a versioned bundle that can contain skills, agents, hooks, and MCP server configs in a single installable unit.
+
+Anthropic maintains two marketplaces:
+
+- **Official** (`claude-plugins-official`): curated by Anthropic, auto-registered on first interactive launch. Browse at `claude.com/plugins` or inside Claude Code at `/plugin > Discover`.
+- **Community** (`claude-plugins-community`): third-party, review-gated submissions. Add it with `/plugin marketplace add anthropics/claude-plugins-community`.
+
+The widget below lets you explore what is available by category:
+
+<EcosystemExplorer />
+
+Some plugins to look at first, sourced from the official catalogue:
+
+| Plugin | Key skills it provides |
+|---|---|
+| `commit-commands` | `/commit`, `/commit-push-pr` — opinionated git workflows |
+| `pr-review-toolkit` | Specialized PR review agents |
+| `feature-dev` | `/feature-dev` — 7-phase guided feature workflow |
+| `security-guidance` | Real-time vulnerability review on every change Claude writes |
+| `claude-md-management` | `/revise-claude-md` — audits and improves your CLAUDE.md |
+| `frontend-design` | Design-attention guidance for UI work |
+
+### Hand-rolled skills in your project
+
+Check `.claude/skills/` in any repository you join. Teams that work with Claude Code tend to accumulate skills over time — deployment recipes, migration runners, release checklists. Read those files before creating duplicates.
+
+## How invocation works
+
+Invoke a skill with a slash command:
+
+```
+/code-review
+/feature-dev add payment integration
+/my-skill some arguments here
+```
+
+Arguments after the command name become available as `$ARGUMENTS` inside the skill body (or as positional `$0`, `$1`, etc.). If a skill has an `argument-hint` field in its frontmatter, Claude Code shows a hint prompt to guide what you type.
+
+Claude also invokes skills **automatically** when the task description matches the skill's `description` field. You do not have to type the slash command if Claude recognises the pattern. To suppress this — making a skill strictly manual — set `disable-model-invocation: true` in the frontmatter.
+
+Skills live-reload within a session. Editing a `SKILL.md` file takes effect immediately without restarting. The one exception: creating a brand new top-level skills directory (`~/.claude/skills/` if it did not exist before) requires a restart for the directory watcher to arm.
+
+## Writing your own skills
+
+### When to write a skill
+
+A skill earns its keep when you find yourself typing the same multi-step instructions more than once. Good candidates:
+
+- Project launch sequences (`docker compose up && pnpm dev`)
+- Release checklists (merge, tag, update changelog, notify)
+- Code review checklists that your team actually enforces
+- Deployment runbooks with conditional steps
+- Any procedure where the *order* matters and forgetting a step is costly
+
+### The anatomy of a skill file
+
+A skill is a folder containing a single `SKILL.md` file:
+
+```
+.claude/
+  skills/
+    deploy-staging/
+      SKILL.md
+```
+
+The file has two parts: YAML frontmatter and a Markdown body.
+
+```markdown
+---
+name: deploy-staging
+description: Deploy the current branch to the staging cluster. Runs smoke test, promotes gcp overlay, watches logs.
+allowed-tools:
+  - Bash
+  - Read
+argument-hint: "[branch name, defaults to current]"
+---
+
+You are deploying to the staging environment. Follow these steps in order:
+
+1. Confirm the working tree is clean (`git status`).
+2. Run the smoke test: `pnpm test:smoke`.
+3. Merge the current branch into `gcp` and push.
+4. Watch Cloud Build logs until the deploy completes or fails.
+5. If the deploy fails, report the error and stop.
+
+Branch to deploy: $ARGUMENTS (default: current branch)
+```
+
+The `allowed-tools` list restricts which tools Claude may use while running this skill. Keeping it tight reduces the blast radius of a misbehaving step.
+
+### Dynamic context injection
+
+One of the most useful skill features is the `!`-prefix: any line starting with `` !` `` is treated as a shell command that runs at invocation time, and its output replaces the line before Claude sees the skill body.
+
+```markdown
+---
+name: commit
+description: Commit staged changes with a well-formed conventional commit message.
+---
+
+Current diff:
+!`git diff --cached`
+
+Current branch:
+!`git rev-parse --abbrev-ref HEAD`
+
+Write a conventional commit message for the diff above. Use the imperative mood.
+Prefix: fix | feat | chore | refactor | docs | test.
+```
+
+When you invoke `/commit`, Claude receives the live diff already inlined — no separate tool call, no extra tokens from a Bash round-trip. The skill delivers fresh context in one shot.
+
+<Callout type="warning" title="Shell commands in skills run at invocation, not at definition">
+The `!` commands execute when you invoke the skill, in the current working directory, with your current shell environment. They are not sandboxed differently from any other Bash call — the same permission rules apply.
+</Callout>
+
+### Scope and override rules
+
+Skills resolve from the closest scope to the furthest, stopping at the first match:
+
+<Mermaid chart={`graph TD
+    A["Invoke /deploy"] --> B{".claude/skills/deploy/?"}
+    B -- found --> C["Load project skill"]
+    B -- not found --> D{"~/.claude/skills/deploy/?"}
+    D -- found --> E["Load personal skill"]
+    D -- not found --> F{"Plugin skills"}
+    F -- found --> G["Load plugin skill"]
+    F -- not found --> H["Bundled skills"]
+    H -- found --> I["Load bundled skill"]
+    H -- not found --> J["Command not found"]
+
+    style C fill:var(--tip-subtle),color:var(--fg)
+    style E fill:var(--note-subtle),color:var(--fg)
+    style G fill:var(--warning-subtle),color:var(--fg)
+    style I fill:var(--bg-subtle),color:var(--fg)
+`} />
+
+This cascade means you can always override any bundled or plugin skill at the project level. Ship a `.claude/skills/run/SKILL.md` and the bundled `/run` never fires in your repo again — your recipe runs instead.
+
+### Monorepo skills and namespacing
+
+In a monorepo, skills in nested `.claude/skills/` directories are automatically discovered as Claude works with files in subdirectories. Their names are directory-qualified to avoid collision:
+
+```
+apps/web/.claude/skills/deploy/SKILL.md   →  /apps/web:deploy
+apps/api/.claude/skills/deploy/SKILL.md   →  /apps/api:deploy
+```
+
+Claude Code picks the right skill based on the active working directory. You rarely need to type the qualified name unless two skills have the same base name in the same scope level.
+
+### Subagent execution
+
+Setting `context: fork` in frontmatter runs the skill in a background subagent — isolated context, parallel execution, summary returns to the parent when complete.
+
+```markdown
+---
+name: audit-security
+description: Run a security audit of the current diff in a background agent.
+context: fork
+allowed-tools:
+  - Read
+  - Grep
+  - Glob
+---
+
+Review every file in the diff for these vulnerability classes:
+- Injection (SQL, command, path traversal)
+- Authentication bypasses
+- Insecure direct object references
+- Secrets committed to source
+
+Report findings as a numbered list with file, line, severity, and remediation.
+```
+
+The parent session stays unblocked. When the audit finishes, its findings surface in the main thread. This pattern is especially useful for long-running checks that should not consume the main context window.
+
+## Practical patterns
+
+### The run-skill-generator workflow
+
+If the bundled `/run` skill fails to infer how to launch your project, use `/run-skill-generator` to record the correct launch sequence interactively. Claude Code walks you through the steps and writes a project-local skill that captures the recipe — so the next `/run` invocation just works.
+
+### Tool restriction as safety net
+
+For destructive skills (database migrations, production deploys), restrict tools aggressively and make the steps explicit:
+
+```markdown
+---
+name: db-migrate-prod
+description: Apply pending Prisma migrations to the production database.
+allowed-tools:
+  - Bash(prisma migrate deploy)
+  - Bash(kubectl *)
+  - Read
+disable-model-invocation: true
+---
+
+IMPORTANT: This skill touches the production database. Proceed only if
+the user has confirmed the migration is tested on staging.
+
+Steps:
+1. Show pending migrations: `prisma migrate status`
+2. Wait for explicit user confirmation before step 3.
+3. Apply: `prisma migrate deploy`
+4. Verify: connect and check `_prisma_migrations` for applied status.
+```
+
+`disable-model-invocation: true` ensures Claude never runs this automatically — only on explicit `/db-migrate-prod`.
+
+### Packaging team conventions as skills
+
+Team conventions that live only in `CLAUDE.md` are easy to miss. Skills make them actionable:
+
+```markdown
+---
+name: pr-ready
+description: Check that a PR branch meets our definition of ready before opening.
+allowed-tools:
+  - Bash
+  - Read
+---
+
+Verify the following before declaring this PR ready:
+
+!`git diff origin/dev...HEAD --name-only`
+
+Checklist:
+- [ ] Typecheck passes (`pnpm typecheck`)
+- [ ] No `console.log` left in changed files
+- [ ] New API routes have a matching Module row in `prisma/seed.ts`
+- [ ] `package-lock.json` updated if deps changed (`npm install --package-lock-only`)
+- [ ] Architecture doc updated if a new route or module was added
+
+Report any failing items with the specific file and line.
+```
+
+Every developer on the team invokes the same checklist. It evolves with the codebase because it lives in source control.
+
+## Recap
+
+Skills are lazily loaded instruction files that extend Claude Code with slash commands. Built-in skills cover the most common patterns; the plugin marketplace adds hundreds more via a two-command install flow. Writing your own skill takes a folder with a single `SKILL.md` — frontmatter controls invocation behaviour, tool restrictions, and execution context; the body is plain Markdown that Claude reads when the skill fires. Dynamic context injection with `!`-prefixed shell lines delivers live data (diffs, branch state, test output) without extra round-trips.
+
+The next chapter covers **hooks** — lifecycle callbacks that let you enforce rules, inject context, and react to Claude's actions at the infrastructure level, without relying on per-session instructions.

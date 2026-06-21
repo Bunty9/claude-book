@@ -1,0 +1,164 @@
+# Automating daily repetitive tasks
+
+You spend some fraction of every workday on tasks that feel like work but are not really thinking: collecting the same information from the same places, reformatting it, and sending it somewhere else. This chapter gives you a practical mindset for spotting that friction, and a concrete toolkit — Claude, n8n, and Zapier MCP — for making it disappear. By the end you will have automated at least one real task and a framework for finding the next ten.
+
+## The first skill: noticing what is actually repetitive
+
+Most people miss obvious automation targets because repetitive tasks spread across a workday rather than arriving in a block. The signal is not volume — it is the absence of decision.
+
+Ask yourself: *When I do this task, am I making a judgment call, or am I just moving information?*
+
+Moving information — copy a Slack message into a Google Sheet, pull yesterday's numbers into a report, send the same briefing email every Monday — is almost always automatable. Making a judgment call — deciding which leads are worth pursuing, drafting a nuanced response to a customer complaint — generally requires you.
+
+A practical way to surface candidates is to keep a "friction log" for one week. Every time you do something that makes you think "I've done this exact thing before," write it down. After a week, look for clusters: the same app pair appearing more than twice, the same time of day, the same trigger event. Those clusters are your automation backlog.
+
+<Callout type="tip" title="The two-minute rule does not apply here">
+The popular advice says: if a task takes less than two minutes, just do it. For automation, that advice is backwards. A 90-second task done 20 times a day is 30 minutes of context-switching, and context-switching is expensive. The right filter is: *does this task recur?* If yes, it is worth a look regardless of how short it is.
+</Callout>
+
+## A mental model: Event → Condition → Action
+
+Every repeatable task you automate has the same underlying shape. Something happens (an event), you check whether something is true (a condition), and then you do something (an action). The academic name for this is Event-Condition-Action (ECA) architecture, and it maps directly to how every automation platform is built.[^eca]
+
+[^eca]: The ECA pattern as a formal model for personal automation is documented in: https://arxiv.org/pdf/2106.00583
+
+<Mermaid chart={`flowchart LR
+    E["📥 Event\n(trigger)"] --> C{"Condition\n(filter / branch)"}
+    C -->|"matches"| A["⚙️ Action\n(do something)"]
+    C -->|"no match"| N["🔕 Skip"]
+
+    style E fill:var(--color-accent),color:#fff
+    style A fill:var(--color-tip),color:#fff
+`} />
+
+**Event:** something that happens in the world — a new email arrives, a calendar event starts in 30 minutes, a form is submitted, a new row appears in a spreadsheet, a webhook fires.
+
+**Condition:** an optional filter that gates the action — "only if the email is from a domain I care about," "only if the priority column says High," "only if it is a weekday."
+
+**Action:** what you want done — send a message, create a calendar event, append to a sheet, call an API, post to Slack.
+
+Once you frame a task this way, picking the right automation tool becomes straightforward.
+
+## Choosing the right tool
+
+The three tools you will reach for most often occupy distinct niches. They are complementary, not competing.
+
+| Tool | Best fit | What it costs |
+|---|---|---|
+| **Claude (direct)** | One-off tasks, ad-hoc information work, tasks where the output needs judgment | Time in your conversation |
+| **Zapier / Zapier MCP** | Connecting apps you already use, no-code, broad coverage (9,000+ apps) | Tasks from your Zapier plan quota |
+| **n8n** | High-volume schedules, multi-step logic, AI-native workflows, full control | Self-hosted: infrastructure only (~$3–10/mo); Cloud: from €24/mo per run quota[^n8n-pricing] |
+
+[^n8n-pricing]: n8n Cloud pricing as of 2026-06-21: https://n8n.io/pricing/ — Cloud Starter €24/month for 2,500 executions; self-hosted Community Edition is free with unlimited executions.
+
+<DecisionTrees />
+
+The decision tree above helps you pick the right mechanism. When in doubt, start with the simplest option that covers your use case and graduate to a more powerful tool only when you hit a real limit.
+
+## Your first automation: the daily briefing
+
+The best first automation is one that pays off every single day. A morning briefing — pulling your calendar, open tasks, and relevant emails into a single message before you start work — is ideal. It has a clear trigger (a time), a fixed set of data sources, and a useful output.
+
+Here is what it looks like expressed as ECA:
+
+- **Event:** weekdays at 7:30 AM
+- **Condition:** none (always run)
+- **Actions:** fetch today's calendar events → fetch high-priority tasks → fetch unread emails from key senders → summarise with AI → send to yourself via email or Slack
+
+In n8n, this maps to a Schedule Trigger node wired to Google Calendar, Google Sheets (or Todoist), Gmail, an AI node, and a send node. The community template library has several ready-to-use variants of this pattern — template #6133 (Todoist + Google Calendar + GPT-4o → Gmail) and template #4385 (Gmail + Calendar → daily brief) are good starting points.[^briefing-templates]
+
+[^briefing-templates]: n8n community templates: https://n8n.io/workflows/6133-automated-daily-briefing-with-todoist-google-calendar-and-gpt-4o-via-gmail/ and https://n8n.io/workflows/4385-ai-powered-calendar-and-meeting-digest-with-gmail-and-gpt-4oclaude-daily-brief/
+
+### A minimal version you can build right now
+
+If you have a Zapier account, you can build a simplified version without writing any code:
+
+1. **Trigger:** Schedule — every weekday at your preferred start time.
+2. **Action 1:** Google Calendar — get today's events.
+3. **Action 2:** Gmail — get unread emails (filtered to important senders or labels).
+4. **Action 3:** Claude or ChatGPT (via Zapier's AI actions) — summarise both into three bullet points per category.
+5. **Action 4:** Gmail or Slack — send the summary to yourself.
+
+<Callout type="note" title="Zapier MCP: giving Claude hands">
+Zapier MCP (mcp.zapier.com) is a remote MCP server that gives Claude access to 9,000+ apps as tools it can call directly — no Zap builder required. You paste a server URL into Claude's MCP settings, add the tools you want, and then a single chat prompt like "pull my calendar for today and send me a briefing" executes across apps. Each tool call costs two tasks from your Zapier quota.[^zapier-mcp-pricing] Think of Zaps as scheduled, trigger-based automation and MCP as giving your AI "hands" for ad-hoc action — the two complement each other.[^zapier-mcp-design]
+</Callout>
+
+[^zapier-mcp-pricing]: Zapier MCP task billing: https://www.goodcall.com/voice-ai/zapier-mcp — each MCP tool call costs two tasks from your plan's task quota.
+[^zapier-mcp-design]: Zapier's own framing of Zaps vs MCP: https://zapier.com/blog/zapier-mcp-guide/
+
+## Levelling up: scheduled workflows in n8n
+
+Once you are comfortable with simple trigger → action pairs, you will hit tasks that need branching logic, retries, or multi-step data transformation. n8n is built for exactly this.
+
+### Anatomy of an n8n scheduled workflow
+
+```
+Schedule Trigger (cron)
+  │
+  ├─ Google Sheets → read rows with status = "pending"
+  │
+  ├─ For each row:
+  │    ├─ HTTP Request → external API
+  │    ├─ AI node → transform/classify response
+  │    └─ Google Sheets → update status column
+  │
+  └─ Gmail → send summary to team
+```
+
+n8n uses standard 5-field cron expressions. `30 8 * * 1-5` runs at 8:30 AM on weekdays. `0 9 * * *` runs daily at 9 AM. You can also use the visual picker if you prefer.[^n8n-cron]
+
+[^n8n-cron]: n8n Schedule Trigger node reference: https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.scheduletrigger/ — cron format verified 2026-06-21.
+
+<Callout type="warning" title="Set your timezone explicitly">
+n8n's self-hosted default timezone is America/New_York. If you are in a different timezone and do not set it explicitly in Workflow Settings, your scheduled runs will fire at unexpected local times. Always set the workflow timezone, not just the instance timezone.[^n8n-tz]
+</Callout>
+
+[^n8n-tz]: Timezone gotcha documented at: https://aiworkflowsautomation.com/n8n-scheduling-tutorial-master-cron-jobs-triggers-for-workflow-automation/
+
+### Naming discipline
+
+When you have a dozen workflows, "Workflow 3" is useless. A descriptive name like "Daily Sales Report – 9 AM Weekdays" or "Gmail Digest → Slack – Every Morning" tells you the trigger, the data, and the output at a glance. Treat workflow names like commit messages: future-you is the audience.[^naming]
+
+[^naming]: Naming convention best practice from: https://aiworkflowsautomation.com/n8n-scheduling-tutorial-master-cron-jobs-triggers-for-workflow-automation/
+
+## The mindset: automate the process, not the mess
+
+There is a trap waiting for new automators: building a workflow around a broken process. If you spend 20 minutes every morning fighting with a chaotic inbox, automating that chaos does not fix it — it scales it.[^broken-process]
+
+[^broken-process]: "Automation does not fix broken processes; it scales them" — https://www.synergyonline.com/post/process-automation-best-practices-driving-business-efficiency-and-growth
+
+Before building, spend ten minutes making the manual version clean and repeatable. Can you do it once without any confusion? If yes, automate it. If not, fix the process first.
+
+This also means starting small. Build one automation, run it for a week, and verify it actually saves time before building five more. A phased approach — one automation validated before the next begins — is the professional standard even in enterprise automation programs.[^phased]
+
+[^phased]: Phased automation rollout guidance: https://www.synergyonline.com/post/process-automation-best-practices-driving-business-efficiency-and-growth
+
+<Callout type="danger" title="Overlapping scheduled runs">
+If your workflow takes longer to run than the interval between runs, you get concurrent executions competing for the same resources. A daily workflow that takes 45 minutes is fine. A 15-minute workflow triggered every 5 minutes is a problem. Either lengthen the interval or add a concurrency limit in n8n's workflow settings to prevent the pileup.[^concurrency]
+</Callout>
+
+[^concurrency]: n8n concurrency control: https://docs.n8n.io/hosting/scaling/concurrency-control/
+
+## Five more quick wins to add to your backlog
+
+Once your daily briefing is running, here are high-ROI automations that follow the same pattern:
+
+1. **Lead triage:** New form submission → AI scores/classifies → routed to the right person via Slack. Replaces: checking a shared inbox and manually assigning.
+
+2. **Meeting prep brief:** Calendar trigger (30 min before event) → pull attendee emails from CRM → AI generates context summary → sent to your phone. Replaces: scrambling for context two minutes before a call.
+
+3. **Weekly report draft:** Friday 4 PM → pull metrics from Sheets/analytics → AI drafts summary → saved to Drive as a draft. Replaces: staring at a blank doc every Friday afternoon.
+
+4. **Email-to-task sync:** New email with label "action-required" → parse due date and task name with AI → create task in Todoist or Linear. Replaces: manually re-entering information from email into your task manager.
+
+5. **File intake pipeline:** New file uploaded to a shared Drive folder → extract text → append metadata to a tracking Sheet → notify relevant Slack channel. Replaces: manually logging received documents.
+
+Each of these is a different ECA triple. Each is buildable in an afternoon once you have authenticated your integrations.
+
+## Recap
+
+Spotting automation opportunities is a skill you develop by paying attention to the absence of decision in your own work. The ECA model — Event, Condition, Action — gives you a shared vocabulary for describing any repeatable task. Claude handles ad-hoc information work; Zapier and Zapier MCP give you breadth across thousands of apps; n8n gives you control, scheduling, and AI-native logic for workflows that run on their own.
+
+Start with your daily briefing. Run it for a week. Then work through your friction log one item at a time. The compounding effect of even a handful of well-built automations is significant — and unlike most productivity improvements, these ones keep paying you back every day without any further effort.
+
+**Next:** the following chapter covers connecting Claude directly to external services using MCP — the underlying protocol that makes Zapier MCP and n8n's AI agent nodes possible, and how to wire up your own integrations.

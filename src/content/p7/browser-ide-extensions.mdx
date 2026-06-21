@@ -1,0 +1,150 @@
+# Browser & IDE extensions
+
+Claude Code lives in your terminal, but some workflows are better served by meeting Claude where work already happens — in a browser tab or inside your editor. This chapter maps the two extension surfaces (Claude in Chrome and the IDE integrations), explains what each one can and cannot do, and gives you the decision heuristic for choosing which surface fits a given task.
+
+## The surface landscape
+
+Before going deep on either extension, it helps to see how the surfaces relate to the CLI and to each other.
+
+<Mermaid chart={`graph LR
+    CLI["Claude Code CLI\n(terminal)"]
+    CHR["Claude in Chrome\n(browser extension)"]
+    IDE["IDE extensions\n(VS Code / JetBrains)"]
+
+    CLI -->|"full agent loop\nall 38 tools"| CLI
+    CHR -->|"browser tabs\nDOM / console / network\nfile upload"| CHR
+    IDE -->|"editor context\ninline completions\nSide Panel"| IDE
+
+    CLI -- "same underlying model" --- CHR
+    CLI -- "same underlying model" --- IDE
+
+    style CLI fill:var(--color-accent),color:#fff
+    style CHR fill:var(--color-note),color:#fff
+    style IDE fill:var(--color-tip),color:#fff
+`} />
+
+All three surfaces call the same underlying Claude models. What differs is the **context each surface can see** and the **actions it can take**. The CLI has the widest action surface (every built-in tool). Extensions have narrower, domain-specific action sets but zero setup friction for their target environment.
+
+<Callout type="note" title="The full tool surface lives in the CLI">
+If you need to reach a tool that is not available in an extension — running a shell command, spawning a subagent, or calling an MCP server — the CLI is the right surface. Extensions are optimised for their lane, not as replacements for the full agent loop.
+</Callout>
+
+## Claude in Chrome
+
+The Claude in Chrome extension puts Claude inside your existing browser session. It can see, read, and interact with pages you have open without needing to open a new browser instance or configure a separate Playwright server.
+
+### What it can do
+
+The extension exposes a set of tools that the model can call within a conversation:
+
+| Tool | What it does |
+|---|---|
+| `navigate` | Open a URL in a new tab or the current tab |
+| `read_page` | Return the parsed content of the active page |
+| `get_page_text` | Extract the plain text of a page |
+| `find` | Locate elements by selector, text, or ARIA role |
+| `form_input` | Fill form fields |
+| `computer` | Click, type, scroll — direct mouse/keyboard control |
+| `javascript_tool` | Execute JavaScript in the active page context |
+| `read_console_messages` | Pull the browser console log |
+| `read_network_requests` | Inspect network requests made by the page |
+| `file_upload` | Upload files into an open file input |
+| `gif_creator` | Record a GIF of browser actions for documentation |
+
+The key distinction from a headless Playwright setup is that the extension operates in **your existing authenticated session**. You do not need to log in again, handle OAuth flows programmatically, or set up cookies. If you are already signed into your staging environment, the extension inherits that session.
+
+### When it shines
+
+**Manual QA and bug reproduction.** Describe a user journey in plain language; the extension navigates, fills forms, reads the result, and reports back. Because it reads the console log and network requests, it can report a failing API call or a JavaScript error that a human reviewer might miss.
+
+**Scraping pages behind a login.** You are authenticated, so the extension can read content that a headless browser would need credentials to reach.
+
+**Documenting UI flows.** The `gif_creator` tool records a sequence of browser interactions as an animated GIF — useful for issue reports, onboarding guides, or PR descriptions.
+
+**Debugging frontend issues interactively.** Point Claude at a page that is behaving strangely, ask it to read the console, check the network requests for the relevant call, and inspect the DOM — all without leaving the conversation.
+
+### Limitations to keep in mind
+
+The extension can only interact with tabs in the browser it is connected to. It cannot reach your filesystem, run shell commands, or call MCP servers that are configured in your CLI session. Cross-origin iframe content is subject to standard browser security restrictions — the extension cannot read inside a third-party iframe any more than your own JavaScript can.
+
+<Callout type="tip" title="Grant site-level permissions before automating">
+The extension requires site-level permissions to be configured before it can execute tool calls on a given domain. Grant these in the extension's settings for each origin you want Claude to automate. This is a one-time step per site, not per conversation.
+</Callout>
+
+### A representative workflow
+
+You are tracking down a bug where the checkout page shows the wrong item count after applying a coupon code. Here is what a Claude-in-Chrome session looks like:
+
+1. Navigate to the checkout page with items in the cart.
+2. Apply a coupon code using `form_input` and `computer` (click submit).
+3. Read the page with `read_page` to check the displayed count.
+4. Read the console with `read_console_messages` to see if any errors fired.
+5. Read the network request to `/api/cart` with `read_network_requests` to see the server response.
+6. Report: the server returned the correct count; the rendering component read from stale local state.
+
+This whole sequence runs in one conversation. The finding is specific and reproducible.
+
+## IDE extensions
+
+The IDE extensions (VS Code and JetBrains family) bring Claude into the editor itself. The integration is tighter than a browser extension because your editor already knows your project — it has the file tree, the language server, the open buffers, and the diff.
+
+### What the VS Code extension adds
+
+The VS Code integration (available via the Claude Code extension in the marketplace) adds three things to a standard Claude Code session:
+
+**Side Panel.** A persistent panel in the editor UI where you can converse with Claude without leaving VS Code. The panel has full access to the same agent loop as the CLI — it is not a stripped-down chat widget.
+
+**Inline completions.** As you type, Claude can offer completions that are aware of the file you are editing, the surrounding code, and the project conventions in your `CLAUDE.md`. These are opt-in and respect the same permission model as the rest of the tool.
+
+**Editor context forwarding.** When you open a conversation from inside VS Code, the extension automatically includes the currently open file, the selection, and any diagnostics (type errors, linter warnings) from the language server. You do not have to paste code into the chat; the editor hands it over.
+
+### The LSP advantage
+
+Claude Code's `LSP` tool connects to language servers for code intelligence — jump to definition, find references, type error enumeration, call hierarchies. The official LSP plugins in the marketplace (one per language) require the language server binary to be installed separately, but once set up, the `LSP` tool runs automatically after each file edit and reports type errors back to Claude without a separate build step.[^lsp-source]
+
+This is the most significant capability gap between using Claude Code in a raw terminal versus using it inside a project with a configured language server. In a terminal session, Claude must run `tsc --noEmit` or `cargo check` as a Bash call. With `LSP`, the language server feed is live: edit, get errors, fix, repeat — without explicit build commands.
+
+[^lsp-source]: https://code.claude.com/docs/en/tools-reference.md — last verified 2026-06-21.
+
+### JetBrains
+
+The JetBrains plugin (IntelliJ, PyCharm, WebStorm, and the rest of the family) follows the same pattern: Side Panel for conversation, editor context forwarding for the active file and selection, and access to the full agent loop. JetBrains IDEs have their own language intelligence layer that is independent of the LSP plugin system, so the `LSP` tool integration works differently — check the plugin's own documentation for current support.
+
+### Choosing between the terminal and an IDE extension
+
+Neither surface is strictly better. The choice depends on what you are doing in a given session.
+
+| Situation | Preferred surface |
+|---|---|
+| Large multi-file refactor with type feedback | IDE extension (LSP active, inline context) |
+| Running a workflow or spawning subagents | CLI (full tool surface, no IDE overhead) |
+| Debugging a web page, scraping, or QA | Claude in Chrome |
+| Writing a hook or customising settings | CLI or IDE — either works |
+| Quick single-file edit while already in the editor | IDE extension |
+| Headless / CI / scripted automation | CLI or Agent SDK |
+
+The IDE extension reduces friction for editor-native work. The CLI gives you everything. The browser extension covers what neither of the others can reach.
+
+## The full tool surface (interactive reference)
+
+The widget below lets you explore all built-in Claude Code tools, filterable by surface area and permission requirements. Use it to confirm which tools are available before planning a workflow on a particular surface.
+
+<ToolSurfaceMap />
+
+When you move to a browser or IDE extension, you are working with a subset of this surface. The extension's own tools (browser actions, editor context) supplement it, but the 38 CLI tools do not all transfer — only the ones the extension exposes through its own host adapter.
+
+## Picking your surface
+
+Three questions narrow the choice quickly:
+
+1. **Where does the data live?** In a browser tab (use Chrome extension), in the filesystem or a shell (use CLI), in editor buffers with type feedback (use IDE extension).
+2. **Do you need shell access or MCP tools?** If yes, the CLI is the only path.
+3. **Are you authenticated somewhere in the browser?** If the target is behind a login you already have, the Chrome extension saves the credential-handling work.
+
+In practice most power users run the CLI as their primary surface and reach for an extension when the task naturally lives in that environment. The extensions are not alternatives to the CLI; they are accelerators for the domain they occupy.
+
+## Recap and next
+
+Browser and IDE extensions extend Claude's reach into environments where the CLI is not the natural tool. Claude in Chrome automates authenticated browser sessions, reads the DOM and network, and can document UI flows as GIFs. IDE extensions thread Claude into your editor's language intelligence, reduce context-copying friction, and make the `LSP` tool's live type feedback practical. The CLI remains the surface with the widest tool coverage and the one you reach for when orchestration, hooks, or MCP servers are in play.
+
+Next up: plugins and the marketplace — how Anthropic's plugin system bundles skills, agents, MCP servers, and hooks into installable units, and how to evaluate what is worth installing.

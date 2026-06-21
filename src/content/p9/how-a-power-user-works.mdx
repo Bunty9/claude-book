@@ -1,0 +1,204 @@
+# How a power user really works
+
+Most Claude Code advice focuses on individual interactions — a better prompt here, a useful skill there. This chapter goes further: it reconstructs the operating system a high-output practitioner runs day to day. Every pattern here is grounded in evidence from real sessions, not intuition.
+
+By the end you will have a concrete picture of how the pieces — memory, worktrees, autonomous mode, parallel agents, short prompts — fit together into a coherent practice.
+
+## The shape of high-output usage
+
+The numbers from real session data set the stage. Across one project that spans a multi-repo CRM platform, the session history shows 76 recorded sessions in the main project directory, plus dozens more in isolated worktree directories, with an average session size of 2.2 MB and the largest reaching 14 MB and 3,575 lines. The weekly output across that period runs to 8–17 merged pull requests covering infrastructure migrations, security remediation, new features, and observability work. (Source: packet-E, F-01, F-02, F-32)
+
+That volume does not come from typing faster. It comes from a set of structural choices that compound.
+
+<Callout type="note" title="What 'power user' means here">
+Not someone who uses Claude constantly, but someone whose setup makes each session maximally effective — minimal friction, maximal context, no re-explanation of things Claude should already know.
+</Callout>
+
+## Layer 1: The standing document does the heavy lifting
+
+The single most important investment in a high-output Claude Code setup is not a skill or a hook — it is a thorough `CLAUDE.md`. When the project-level instructions file covers architecture, conventions, known sharp edges, schema highlights, and operational invariants, every prompt can stay short because the persistent document carries the explanatory weight.
+
+The project examined has a `CLAUDE.md` exceeding 400 lines. The human prompts average 10–80 words. The ratio inverts common intuition. Experienced users invest once in the document and spend nothing on re-explaining project context in individual prompts. (Source: packet-E, F-20, F-33)
+
+The practical structure for a high-value `CLAUDE.md`:
+
+```
+# Project name and one-paragraph purpose
+
+## Architecture overview
+(diagram or short bullet list — what the system does, what the moving parts are)
+
+## Module/route map
+(where things live; enough that Claude can navigate without exploring from scratch)
+
+## Conventions
+(naming, import style, which tools to use and which to avoid)
+
+## Known sharp edges
+(the things that will trip up a naive approach; gotchas from past incidents)
+
+## Schema highlights
+(the entities, their key fields, the invariants that must not break)
+
+## Common commands
+(the five commands used 80% of the time)
+```
+
+Update it when code changes that document — stale architecture docs are worse than no docs. When you fix a known sharp edge, delete the bullet. When you discover a new one, add it immediately.
+
+## Layer 2: Automated memory, not manual curation
+
+A long-running project accumulates facts faster than any single `CLAUDE.md` can hold them — shipping decisions, incident post-mortems, architectural pivots, tool-specific gotchas. Power users solve this with a two-tier memory system.
+
+**Tier 1: Daily rolling log.** A `remember` plugin (or equivalent) runs a `PostToolUse` hook that extracts a compact summary from the current session and appends it to a dated log. The key phrase: *automated extraction*, not manual `remember this` commands. The plugin applies cooldown logic (skips if run too recently), minimum session length thresholds, and writes structured bullet entries. At session start, a `SessionStart` hook re-injects the relevant recent entries. (Source: packet-E, F-06, F-07)
+
+**Tier 2: Structured named facts.** Alongside the rolling log, 65 structured memory files capture durable typed knowledge — feedback preferences, shipped feature state, operational runbooks, architectural decisions. Each file has a name, type (`feedback` | `project` | `reference`), and a "how to apply" note for future sessions. This is where decisions live: "RR pool now uses today-count balance only, Redis pointer removed (2026-05-16)" — facts too important to discover again from scratch. (Source: packet-E, F-08)
+
+The result: `/compact` was invoked once across 76 sessions. Context continuation is fully automatic. (Source: packet-E, F-09)
+
+The architecture:
+
+<Mermaid chart={`sequenceDiagram
+    participant U as User
+    participant C as Claude session
+    participant H as PostToolUse hook
+    participant M as Memory store
+
+    U->>C: Open session
+    Note over C: SessionStart hook injects<br/>recent log + named facts
+
+    loop Every tool call
+        C->>H: Tool completes
+        H->>M: Extract + append if threshold met
+    end
+
+    U->>C: "Continue from where you left off"
+    Note over C: No re-explanation needed —<br/>memory was injected at start
+`} />
+
+## Layer 3: Worktrees as the unit of isolation
+
+A worktree is not a convenience — it is the correctness primitive for parallel and sequential feature work.
+
+The evidence is stark: failing to enforce worktree discipline once caused a complete re-implementation loss. A feature branch was built on a base 314 commits behind `dev`, silently clobbering weeks of shipped work. The branch "looked different from dev" because it was older, not newer. The `lux-wt.sh` script was written specifically as a post-incident structural fix — it always bases new worktrees on `origin/dev`, runs `npm ci` and any code-generation steps in the new directory, and copies the environment file. A `SessionStart` hook runs `lux-wt brief` on every session open to warn if any main checkout has drifted. (Source: packet-E, F-10, F-11, F-12)
+
+The operating model:
+
+- **Main checkout:** always detached at `origin/dev`. Never a workspace. Never dirty.
+- **Feature work:** a new worktree per branch, created by a script, never by hand.
+- **Session memory:** each worktree gets its own `~/.claude/projects/` directory — session context is naturally isolated per feature.
+
+This setup means 37 simultaneous active worktrees (17 backend, 20 frontend) with no conflicts, no stash juggling, no "I forgot which branch I was on". (Source: packet-E, F-10)
+
+```bash
+# The only correct way to start feature work
+./scripts/lux-wt.sh new be my-feature-branch
+
+# What it does:
+# 1. git worktree add -b my-feature-branch ../cdp-backend-worktrees/my-feature-branch origin/dev
+# 2. cd into the new directory
+# 3. npm ci && npx prisma generate
+# 4. cp .env ../cdp-backend-worktrees/my-feature-branch/.env
+```
+
+## Layer 4: Autonomous mode with a single targeted guardrail
+
+Across 76 sessions and all worktree sessions, `bypassPermissions` mode is used 100% of the time — 3,617 bypass entries, zero restricted entries. The global settings also set `alwaysThinkingEnabled: true` and `effortLevel: high`. (Source: packet-E, F-03, F-04, F-27)
+
+This sounds aggressive. The guardrail makes it safe.
+
+A `PreToolUse` hook intercepts every `git commit` Bash call. It reads the `tool_input.command` field from the hook payload, verifies `git config user.name` and `user.email` against expected values, and scans the commit message for AI attribution strings (`Co-Authored-By: Claude`, `Generated with`, `🤖`). Any mismatch → `permissionDecision: deny`. (Source: packet-E, F-05)
+
+The design reflects a deliberate trust model: Claude can create files, run shell commands, call `gh pr create`, and execute migration scripts without interruption — because those are reversible. Commit author identity and attribution are not reversible once pushed, so that is the one enforced gate. Full autonomy where it is safe; hard constraint at the one irreversible side-effect.
+
+<Callout type="warning" title="Bypass mode requires a trust foundation">
+Running `bypassPermissions` without guardrails is not a power-user pattern — it is an accident waiting to happen. The hook is not optional. It is the other half of the trust equation.
+</Callout>
+
+## Layer 5: Parallel agents dispatched by outcome, not instruction
+
+The most visible output-multiplier is parallel sub-agent dispatch. But the prompting style that makes it effective is counterintuitive: prompts are short and goal-oriented, not long and instruction-oriented.
+
+Representative real prompts from 76 sessions: (Source: packet-E, F-20)
+
+- *"start tier 1, one pr including all changes, use parallel agents and worktrees"*
+- *"open pr to dev, do e2e pr review using toolkit"*
+- *"shut down local, full pipeline deploy pr"*
+
+These are 10–15 words. They work because the `CLAUDE.md` and architecture docs carry all the "how" — Claude knows what "tier 1" means in this project, what the review toolkit does, what "full pipeline deploy" entails. The author delegates outcomes; the documents carry the instructions.
+
+The `AgentOrchestrationVisualizer` below shows how a real campaign was structured:
+
+<AgentOrchestrationVisualizer />
+
+Three case studies from packet-E illustrate the range of what parallel dispatch enables:
+
+**Typesafety campaign (386 → 0 TS errors, 1 day, 5 PRs).** The sweep phase used 3 parallel sub-agents assigned to disjoint file scopes — `leads+auth+jobs`, `settings+ops+directory`, and the remaining modules — so they could work simultaneously without file conflicts. This phase alone eliminated 238 remaining TypeScript errors. Safety: disjoint file scopes are the precondition for safe parallelism. (Source: packet-E, F-15)
+
+**Security audit remediation (123 findings, 2 days, 10 PRs).** Seven domain batches ran a 5-stage pipeline: Sonnet planner (verifies finding on `dev`) → Sonnet TDD implementer (tests-first) → Haiku verifier (mechanical gate check — cheap model for a mechanical task) → adversarial reviewer (looks for regressions) → Sonnet fixer (addresses review findings). Result: ~118 of 122 actionable findings fixed, ~150 new tests. (Source: packet-E, F-14)
+
+**Dynamic roles code review (32 commits, 8-agent review pass).** After a large RBAC feature, 8 review agents ran in parallel, each focused on a different quality dimension. They caught 7 critical and 11 high issues before merge, including a `jwt.verify()` synchronous throw inside an async socket handler that would have crashed the process every ~12 minutes in production. (Source: packet-E, F-16)
+
+<Callout type="tip" title="The one rule for parallel agent safety">
+Tasks that touch the same file cannot run in parallel. Disjoint file scopes are the prerequisite. When scope overlap is unavoidable, serialize the agents or merge their tasks into one.
+</Callout>
+
+## Layer 6: Visual debugging at 25% of turns
+
+One pattern that does not appear in most Claude Code guides: a quarter of human turns in real sessions include an image attachment. Screenshots of broken UI, PDF layout regressions, Grafana dashboards showing blank panels, production console errors — all sent directly rather than described in prose. (Source: packet-E, F-19)
+
+The reason is efficiency. "The image gallery overlaps the price table when there are more than three images" is twelve words. A screenshot communicates it unambiguously in zero words, and Claude can see exactly which CSS boundaries are colliding. For UI layout and PDF rendering work especially, visual input replaces lengthy prose descriptions and removes the ambiguity of "it looks wrong."
+
+The same session data shows `kubectl exec -i pod -- node - < file.js` used for one-off production data operations — streaming a local script into the running container because the production image does not include `scripts/` or `tsx`. This pattern came up for a database backfill, a schema hotfix, and authentication state resets. No deploy required. (Source: packet-E, F-23)
+
+## Putting it together: the daily operating rhythm
+
+These layers are not independent — they compose. Here is what a high-output day looks like end to end:
+
+```
+Morning
+└── Open Claude Code in feature worktree
+    SessionStart hook: lux-wt brief (drift check) + memory injection
+    Prompt: "continue from where you left off"
+
+During the day
+├── Short outcome-oriented prompts (10–80 words)
+├── Screenshots for UI bugs (no lengthy prose description)
+├── Parallel agents for sweep-phase tasks (disjoint file scopes)
+└── PostToolUse hook writes session state automatically
+
+Before merge
+└── "open pr to dev, do e2e pr review using toolkit"
+    8 review agents in parallel → findings addressed → merge
+
+Deploy
+└── "shut down local, full pipeline deploy pr"
+    Claude merges → auto-CD fires → kubectl verify pod health
+
+End of day
+└── Memory files updated with architectural decisions made
+    (not optional — tomorrow's session starts from these)
+```
+
+<Callout type="note" title="The remembered decisions are the most valuable artifact">
+Code can be re-read. Decisions cannot be reliably reconstructed from code alone. When a significant architectural choice is made — which topology, which scope, which migration strategy — it goes into a named memory file before the session ends. Memory files like "RR pool is rrEnabled ∧ ¬isOnLeave ∧ isActive, no role filter" encode why something is the way it is, which is the thing that protects future sessions from reversing decisions for the wrong reasons.
+</Callout>
+
+## The mental model shift
+
+There is a common misconception that more powerful Claude Code usage means longer, more detailed prompts. The actual pattern runs the opposite direction. As the setup matures — better `CLAUDE.md`, better memory system, better worktree discipline, better hooks — prompts get shorter, not longer, because the persistent infrastructure carries more of the load.
+
+The shift is from **instruction delegation** (tell Claude every step) to **outcome delegation** (tell Claude the goal; the documents carry the steps). It requires investment up front — a thorough `CLAUDE.md`, a memory system, a worktree script with guardrails — but the compounding returns make each subsequent session more productive than the last.
+
+## Recap
+
+A high-output Claude Code setup rests on six layers that compound:
+
+1. **A thorough `CLAUDE.md`** — 400+ lines of architecture, conventions, and sharp edges means prompts stay at 10–80 words
+2. **Automated session memory** — PostToolUse hooks extract and persist session state; no manual `/compact`
+3. **Worktrees as the isolation unit** — one worktree per branch, created by script, always based on `origin/dev`
+4. **Autonomous mode + one commit hook** — full `bypassPermissions` with identity enforcement as the single targeted guardrail
+5. **Parallel agents dispatched by outcome** — disjoint file scopes enable safe parallelism; Haiku for mechanical gates, Sonnet for implementation
+6. **Visual input at 25% of turns** — screenshots replace prose descriptions for UI and rendering work
+
+The next chapter covers **building your own memory and context system** — how to design the `CLAUDE.md`, memory files, and session summaries that make this pattern work for your project.

@@ -1,0 +1,113 @@
+# What is Claude Code — the agentic harness
+
+Claude Code is not a chat window bolted onto a terminal. It is a fully autonomous agent that can read files, edit code, run commands, search the web, and orchestrate other agents — all inside a loop it drives itself. This chapter explains what that loop looks like, why it matters, and how the harness shapes every interaction you will ever have with Claude Code.
+
+## From chat box to agent loop
+
+Most people's first experience with an AI is a chat interface: you type, the AI responds, you type again. The model is passive. It answers when asked and forgets everything the moment the window closes.
+
+Claude Code works differently. When you give it a task, it enters a **loop**:
+
+1. The model reads everything in the context window and decides what to do next.
+2. If it needs information or wants to change something, it requests a **tool call** — read a file, run a command, search the web, write an edit.
+3. The tool runs. The output comes back as a new message appended to the context.
+4. The model reads the updated context and decides whether it is done or needs another action.
+5. Steps 2–4 repeat until the model produces a final response with no tool requests — or a configured limit is reached.
+
+That cycle — model inference, tool dispatch, result append, repeat — is the **agent loop**. It is what separates an agentic harness from a chat box. The model is not just answering questions. It is taking actions in the world and observing the results, turn by turn, until the task is complete.
+
+<Callout type="note" title="One source of truth">
+The context window is an **append-only message array**. Every user message, assistant response, tool call, and tool result is added to it — nothing is overwritten. This is the loop's entire working memory. If something is not in the context, the model cannot act on it.
+</Callout>
+
+## Anatomy of a turn
+
+Each full cycle of the loop is one **turn**. Here is what happens inside a single turn in concrete terms:
+
+```
+Turn N
+├── [Context] Full message history sent to model
+├── [Model]   Produces: tool-use blocks OR a text-only response
+├── [Dispatch] If tool-use blocks present:
+│     ├── Read-only tools (Read, Glob, Grep) → run in parallel
+│     └── State-modifying tools (Edit, Write, Bash) → run sequentially
+├── [Results]  Each tool's output appended as a UserMessage (tool_result)
+└── [Check]   Does last model response have tool calls? → turn N+1
+              maxTurns hit?                            → ResultMessage: error_max_turns
+              maxBudgetUsd hit?                        → ResultMessage: error_max_budget_usd
+              No tool calls in last response?          → ResultMessage: success
+```
+
+The turn count matters because it controls how long Claude can work before you review progress. In the CLI, it runs until complete by default. When you embed the Agent SDK in your own application, you set `maxTurns` and `maxBudgetUsd` explicitly — otherwise the loop runs indefinitely, which is hazardous for open-ended prompts.
+
+## The HarnessExplorer — click each phase
+
+The widget below maps the six phases of the agent loop. Select any phase to read what it does and how it connects to the others.
+
+<HarnessExplorer/>
+
+## What "harness" means
+
+The word **harness** is deliberate. The loop itself — the scaffolding that manages context, dispatches tools, enforces permissions, tracks spend, fires hooks, and emits the final result — is the harness. The Claude model is a component inside it, not the whole system.
+
+This distinction has practical consequences:
+
+**The harness enforces permissions, not the model.** Before any tool runs, the harness checks against your permission rules (`permissions.allow` / `permissions.deny` in `settings.json`). Six permission modes control the overall policy — from `default` (prompt on anything dangerous) through `acceptEdits` (auto-approve file edits) to `bypassPermissions` (no checks at all, for isolated containers). The model has no say in this; it requests tools and the harness decides whether to run them.
+
+**Hooks intercept the loop at defined points.** Thirty named hook events fire throughout the session: `PreToolUse` can block a tool call before it runs, `PostToolUse` can rewrite the output Claude sees, `Stop` can inject more context to keep the loop going. These are shell scripts or SDK callbacks in your configuration — not model prompts.
+
+**Context is precious and finite.** Every tool result consumes tokens. A large file read can cost thousands. When the context approaches its limit, automatic compaction summarises older history (emitting a `compact_boundary` system message). You can also trigger manual compaction with `/compact`. Static content — the system prompt, tool definitions, your `CLAUDE.md` — is automatically prompt-cached after the first request, so repeated-request costs stay low.
+
+**The loop terminates, not the model.** The harness emits a `ResultMessage` when the loop ends. That message carries the final text, the session ID, cumulative token counts, and total cost. Five end states exist: `success`, `error_max_turns`, `error_max_budget_usd`, `error_during_execution`, and `error_max_structured_output_retries`. Only `success` means the model decided it was done.
+
+## Tools: the model's hands
+
+The model reasons, but it cannot do anything without tools. As of the current version, Claude Code ships with over thirty built-in tools. A few worth knowing early:
+
+| Tool | What it does |
+|---|---|
+| `Read` | Reads a file with line numbers; also handles images, PDFs, and notebooks |
+| `Edit` | Exact string replacement in a file (requires a prior `Read`) |
+| `Write` | Creates or overwrites a file |
+| `Bash` | Runs a shell command (2-minute default timeout, 30 000 character output limit) |
+| `Glob` | Finds files by pattern |
+| `Grep` | Searches file contents via ripgrep |
+| `WebSearch` | Queries the web and returns titles and URLs |
+| `WebFetch` | Fetches a URL and returns extracted content (processed by a small model before Claude sees it) |
+| `Agent` | Spawns a subagent — a fresh Claude instance with its own loop |
+
+Read-only tools (`Read`, `Glob`, `Grep`, and MCP tools marked `readOnlyHint`) can run in parallel within a single turn. Everything that modifies state runs sequentially. You do not control this scheduling — the harness manages it automatically based on tool annotations.
+
+<Callout type="tip" title="For automators: tool permission syntax">
+Tools are gated by rules like `Bash(npm run *)` or `Edit(/src/**)`. Adding these to `permissions.allow` in `.claude/settings.json` lets matching tool calls run without a prompt. The `dontAsk` permission mode — useful in CI — means Claude only runs tools that already have an allow rule and silently rejects everything else.
+</Callout>
+
+## Why this mental model matters
+
+Once you see Claude Code as a loop rather than a chat box, several things that might otherwise seem surprising start to make sense.
+
+**"Why did it do so much without asking?"** Because the loop is designed to run autonomously until complete. The model requested tools, the harness approved them (per your rules), results came back, and it kept going. If you want checkpoints, set `maxTurns` low, use plan mode (`Shift+Tab` or `/plan`) to require approval before any edit, or add `PreToolUse` hooks that pause on specific actions.
+
+**"Why does it sometimes lose context from earlier in the session?"** Because the context window is finite and append-only. Old messages eventually get compacted away. Critical project conventions belong in `CLAUDE.md` (loaded fresh every session) or in auto-memory files — not just mentioned once in a long conversation.
+
+**"How do I make it faster or deeper?"** Effort levels — `low`, `medium`, `high`, `xhigh`, `max` — control how much reasoning the model applies per turn. Higher effort uses more thinking tokens and costs more, but produces better results on complex tasks. Set the level with `/effort` or the `effortLevel` setting.
+
+**"Can it run multiple things at once?"** Yes — via subagents. The `Agent` tool spawns a fresh Claude instance with its own isolated loop. Dynamic workflows can run up to sixteen subagents concurrently, with intermediate results staying in script variables rather than in the parent's context window.
+
+<Callout type="warning" title="Autonomous does not mean unsupervised">
+The agent loop can create files, run commands, and make network requests — all without further prompts if you have approved those tool categories. Start with the `default` permission mode and narrow to `acceptEdits` or `dontAsk` only once you understand what Claude will reach for. The harness is your enforcement layer; configure it intentionally.
+</Callout>
+
+## CLAUDE.md: standing instructions across every loop
+
+One practical consequence of the append-only loop: each new session starts with an empty context. Any project conventions you want Claude to follow must be loaded fresh every time.
+
+`CLAUDE.md` is the mechanism. Place one at your project root and it is injected as a user message at the start of every session — before your first prompt. Your personal `~/.claude/CLAUDE.md` loads for every project. The harness prompt-caches these files after the first request so they do not add cost on subsequent turns within the same session.
+
+Think of `CLAUDE.md` as your standing brief to a new collaborator: what this project is, what patterns to follow, what to avoid. The loop reads it; it does not need to be repeated.
+
+## Recap
+
+Claude Code is an agent loop: the model reads context, requests tools, gets results back, and repeats until done. The harness — not the model — manages permissions, hooks, context compaction, spend limits, and the final result. Tools are the model's only way to affect the world. Understanding the loop is the foundation for every technique in the chapters that follow.
+
+**Next:** [What is an LLM, fundamentally?](/c/what-is-an-llm) covers the token-predicting engine inside the model — the layer underneath the harness.

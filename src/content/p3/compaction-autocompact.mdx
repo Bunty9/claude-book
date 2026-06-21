@@ -1,0 +1,140 @@
+# Compaction & autocompact
+
+Every Claude Code session runs on a fixed-size context window. As turns accumulate, that window fills up — and when it does, something has to give. This chapter explains the mechanics of compaction: why it triggers, what it actually costs you, and the practical techniques that keep context lean enough to work in long or repeated sessions.
+
+## Why context has a ceiling
+
+A Claude session is an append-only message array. Every prompt you write, every tool result that comes back, every file Claude reads — all of it lands in that array and stays there for the rest of the session. Nothing is ever removed. The array only grows.
+
+This is intentional. The model needs prior turns to reason coherently about the task. But it creates an inescapable constraint: the array cannot grow forever. Every model has a maximum context size, and once the session crosses it, the loop cannot continue.
+
+<ContextWindowSim />
+
+Try the simulator above. Switch between **Lean** and **Bloated** presets, then drag the turn count upward. Notice that the bloated session — larger `CLAUDE.md`, more tools, file reads returned as tool results — hits the compaction threshold in far fewer turns. The system block alone (2 K vs 18 K tokens) makes an enormous difference before any conversation has even started.
+
+<Callout type="note" title="What's actually in the system block?">
+The system block is the static prefix of every request: your `CLAUDE.md` files, the tool schemas for every built-in and MCP tool registered to the session, and Claude Code's own engineering instructions. It is prompt-cached after the first request in a session, which avoids paying full encoding cost on every turn — but it still occupies space in the window on every call. A large `CLAUDE.md` or many registered MCP tools can consume tens of thousands of tokens before you have typed a single word.
+</Callout>
+
+## When autocompact triggers
+
+Claude Code monitors the fill ratio of the context window continuously. When context approaches the limit, the autocompact mechanism fires automatically. You did not have to ask; the session did not crash; the loop simply continues from a summarised starting point.
+
+The sequence looks like this:
+
+<Mermaid chart={`sequenceDiagram
+    participant H as Harness
+    participant M as Model
+    participant C as Compactor
+
+    H->>M: Turn N (context ~84% full)
+    M->>H: Tool call result
+    H->>H: Fill check — threshold crossed
+    H->>C: Summarise conversation so far
+    C->>H: Compact summary (much smaller)
+    H-->>H: Emit compact_boundary SystemMessage
+    H->>M: Turn N+1 (context reset, summary injected)
+    M->>H: Continues task…
+`} />
+
+The `compact_boundary` system message is the observable marker. If you are watching session events with the Agent SDK, you will see a `SystemMessage` with subtype `compact_boundary` at this moment. The loop itself does not stop — it keeps running, picking up from the summary.
+
+The `/compact` slash command triggers the same mechanism manually, before the threshold is reached. This is useful when you can tell that early turns have become dead weight and you want to recover headroom proactively.
+
+You can also disable autocompact entirely:
+
+- **Settings key:** `autoCompactEnabled: false` in `settings.json`
+- **Env var:** `DISABLE_AUTO_COMPACT=1`
+
+Disabling it means the session will eventually hit the hard context limit and terminate with an error rather than gracefully summarising. This is useful in automated pipelines where you need deterministic, unmodified context — but it is risky for long interactive sessions.
+
+## What compaction actually costs you
+
+Compaction is lossy by design. The compactor produces a summary, and summaries omit detail. After a compaction boundary, the model can no longer see the literal text of any tool output or message that was compacted away — only the distilled version.
+
+The practical failure modes:
+
+**Exact values disappear.** If a tool returned a specific value — a file hash, an ID, a port number, an exact error message — and you did not write it somewhere durable, it may be gone after compaction. The summary might say "the build produced a binary" without recording where it was placed.
+
+**Reasoning chains compress.** Multi-step arguments constructed over many turns compress into conclusions. Claude may remember the conclusion ("use approach X") without the reasoning ("because Y and Z were ruled out in turns 3–7"). If something goes wrong, the debugging context is thinner.
+
+**File state and disk state diverge.** Compaction has no visibility into what is on disk. If Claude read a file in turn 4 and the file has since changed on disk, the compacted context will contain only the old version in summary form. Claude may not know to re-read it.
+
+<Callout type="warning" title="Durable state belongs on disk, not in context">
+Any value you will need after a compaction boundary should be written to a file before it disappears. This is not just good hygiene — it is the correct architectural pattern for long sessions. Disk is persistent; context is ephemeral. Write results to files, commit them to git, save them to structured output. Do not rely on the message array as your only record.
+</Callout>
+
+## The token cost of common operations
+
+Understanding which operations are expensive helps you structure sessions to last longer before compaction. The simulator's presets reflect real-world proportions:
+
+| Operation | Approximate token cost | Notes |
+|---|---|---|
+| Short user message | ~100–200 | Cheap; doesn't accumulate fast |
+| Assistant reply | ~300–1,200 | Varies with task complexity |
+| Reading a small file | ~500–2,000 | Depends on file length |
+| Reading a large file | 5,000–20,000+ | A 1,000-line file at ~5 tokens/line |
+| Search results (many files) | 2,000–6,000 | Can be large when Grep returns many matches |
+| MCP tool result | 500–10,000+ | Highly variable; JSON responses balloon fast |
+
+These are illustrative ranges, not official benchmarks. The key insight is the order of magnitude difference: a file read can cost as much as dozens of plain messages. A session that reads ten large files in the first few turns has consumed a substantial fraction of the window before the conversation has even properly started.
+
+## Strategies for keeping context lean
+
+### Keep `CLAUDE.md` focused
+
+The system block is paid on every single turn in the session. Every kilobyte you add to `CLAUDE.md` is a recurring cost that slightly shrinks the space available for actual conversation. This does not mean `CLAUDE.md` should be short — it means it should be *focused*. Architecture overview, sharp edges, critical conventions: yes. Step-by-step procedural instructions that only apply sometimes: better moved to a Skill, which loads lazily only when invoked.
+
+Skills are the correct alternative for "instructions I need sometimes." They are not injected into the system block on every turn; they are loaded on demand. Moving procedural content from `CLAUDE.md` to Skills directly reduces your baseline token burn.
+
+### Prefer targeted reads over full-file reads
+
+When Claude needs information from a file, it is worth asking: do you need the whole file, or just a portion? The `Read` tool accepts `offset` and `limit` parameters for exactly this reason. `Grep` returning matching lines rather than full-file content is another approach.
+
+A pattern that works well for large codebases: use `Grep` first (returns filenames and matching lines, not full content), then `Read` only the files and line ranges that are relevant. This replaces a potential 15,000-token full-file read with a 300-token grep result plus a targeted 500-token partial read.
+
+### Write results to files early
+
+Long-running tasks often produce intermediate results — IDs, generated content, computed values — that will be needed again later. If those results exist only in tool-result messages, they are compaction victims. Write them to files as you go: a `results.json`, a `progress.md`, a simple text file in a scratch directory. The file persists across compaction boundaries; the message array does not.
+
+This maps to a broader principle in packet research (F-09): across 76 primary sessions observed in a real project, `/compact` was invoked manually only once. Session continuity came not from carefully managing the context window, but from a dedicated memory system — automated per-session summaries written to disk and injected at the next session start. The context window is not the right place to store durable knowledge; disk is.
+
+### Manage MCP tool registrations
+
+Every MCP tool schema registered to a session adds to the system block. If you have fifteen MCP servers connected but only ever use three tools from them, the schemas for the other twelve are consuming tokens on every turn. Claude Code supports deferred tool loading (via `ToolSearch`) precisely to avoid this: tools that are not immediately needed are not loaded into context until you ask for them. When configuring MCP servers, prefer fine-grained enablement over connecting everything at once.
+
+### Use `/compact` before a predictable expensive phase
+
+If you know a task is about to enter a phase that will consume a lot of tokens — reading many files, running a large search sweep — and your context is already well-used, running `/compact` first is a sound move. It resets the fill counter and gives you headroom for the expensive work ahead. The cost is the same information loss as autocompact, but you choose the timing rather than letting it happen mid-task.
+
+## What engineers can observe and hook
+
+The Agent SDK exposes two hook events for compaction:
+
+- **`PreCompact`** fires before the compaction begins. You can use this to write a snapshot of any in-context state you want to preserve before summarisation.
+- **`PostCompact`** fires after compaction completes, with access to the new context. You can log the boundary, inject additional context for the fresh session, or notify your infrastructure.
+
+Neither hook is blocking — compaction will proceed regardless. But they are the right place to run automated state preservation logic in production pipelines.
+
+```typescript
+// SDK hook example: log compaction events
+const options = {
+  hooks: {
+    PreCompact: [{ hooks: [async () => {
+      console.log('[compaction] context approaching limit — saving checkpoint')
+      // write any critical in-memory state to disk here
+    }] }],
+    PostCompact: [{ hooks: [async () => {
+      console.log('[compaction] context reset, session continues')
+    }] }],
+  },
+}
+```
+
+## Recap
+
+Autocompact is Claude Code's self-preservation mechanism: when the context window approaches its limit, the harness summarises older turns and continues from the boundary. It is lossy — exact values, reasoning chains, and file state from before the boundary may not survive in full detail.
+
+The strategies that matter most: keep your `CLAUDE.md` focused and move rarely-needed procedures to Skills; prefer targeted reads (`Grep` + partial `Read`) over whole-file reads; write durable values to files rather than leaving them in the message array; and manage MCP tool registrations to avoid inflating the system block unnecessarily.
+
+The next chapter looks at how to structure the work that happens *within* the context — prompting patterns and task decomposition that make long sessions more predictable and less prone to compaction surprises.

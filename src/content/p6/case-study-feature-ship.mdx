@@ -1,0 +1,167 @@
+# Case study — how a feature actually ships
+
+This chapter walks through the full lifecycle of a real feature: from the moment an idea appears to the moment it lands in production. The source is a large, anonymized set of real Claude Code sessions mined from a multi-repo CRM project. What follows is concrete — no invented steps, no idealized flow — just what actually happened, why it happened that way, and what the patterns generalize to.[^packet-e]
+
+[^packet-e]: All findings are sourced from Research Packet E (Team E, 2026-06-21), which analyzed 1,271 sessions across 141 project directories plus 45 days of structured memory logs and 65 named memory files.
+
+## The setup: context that persists across sessions
+
+Before any feature starts, there is infrastructure that makes everything else possible. The project maintains a 400-line `CLAUDE.md` covering architecture, conventions, schema highlights, known gotchas, and the RBAC model. A `remember` plugin (v0.7.3) runs a `PostToolUse` hook that extracts session summaries into dated daily logs after each tool call. At session start, a `SessionStart` hook re-injects the relevant portions — the author never manually writes context prompts.[^f06]
+
+[^f06]: Research Packet E, F-06: the remember plugin fires `post-tool-hook.sh` after every tool call; a Python pipeline calls a small model to summarize exchanges into compact bullets. F-07 documents the 45 daily logs and 65 named memory files.
+
+The result: prompts are 10–80 words. The CLAUDE.md carries the instructional weight that most developers try to stuff into their prompts. The author delegates outcomes ("implement the feature in the image") not procedures — because the procedures live in the standing document.[^f33]
+
+[^f33]: Research Packet E, F-33: the most common prompt structure is a noun phrase for what to do, plus optional execution flags. The CLAUDE.md is the persistent instructional context that makes goal-oriented delegation safe.
+
+This matters for what follows because every step in the feature lifecycle is shorter than it looks in a tutorial. The boilerplate is already done.
+
+## Step 1: Spawn a worktree, not a branch
+
+The first concrete action on any feature is creating a git worktree. Not checking out a branch — creating a new worktree via a dedicated script that enforces a single invariant: the base is always `origin/dev`, never the current checkout HEAD.[^f10]
+
+[^f10]: Research Packet E, F-10: 17 backend and 20 frontend worktrees active as of 2026-06-21, all created via `lux-wt.sh`, all based on `origin/dev`. The main checkouts stay detached and are never a workspace.
+
+The script (`./scripts/lux-wt.sh new be|fe <branch-name>`) does several things in sequence: creates the worktree, runs `npm ci` and `prisma generate` inside it, copies the `.env` file so the server starts immediately, and creates an isolated `~/.claude/projects/` entry for the branch. That last point matters: session memory is isolated per worktree. A session in `cdp-backend-worktrees/feat/my-feature` does not bleed into `cdp-backend-worktrees/feat/other-feature`.
+
+<WorktreeWorkflowAnimator />
+
+The step-through above shows why the main checkout stays detached. The failure mode of skipping this discipline is documented as a concrete incident: a worktree was once created from a feature branch that turned out to be 314 commits stale. The work built on it clobbered shipped features — a shipped PDF filename-rename, a shipped doctor combobox, a shipped discount model — and had to be re-implemented from scratch.[^f12]
+
+[^f12]: Research Packet E, F-12: "I once built an estimate-PDF redesign on top of the checked-out `feat/time-converter-v1.6` HEAD because its files 'differed from dev' — I assumed it was newer. It was 314 commits stale." The `lux-wt.sh` script was the post-incident structural fix.
+
+A `SessionStart` hook runs `lux-wt brief` every time any session opens in the project. If the main checkout has drifted onto a branch or gone dirty, it warns immediately. This is a structural check, not a reminder.[^f11]
+
+[^f11]: Research Packet E, F-11: the hook command runs `bash "$CLAUDE_PROJECT_DIR/scripts/lux-wt.sh" brief 2>/dev/null || true`; it warns on drift, stays silent if everything is clean.
+
+## Step 2: Implement — with bypass permissions and a commit guardrail
+
+Once the worktree is up, the author opens a Claude Code session in that directory. Every session in this project uses `bypassPermissions` mode — 100% of 1,271 sessions.[^f03] Combined with `alwaysThinkingEnabled: true` and `effortLevel: high` set globally, this means Claude can write files, run shell commands, call `gh`, and execute migrations without any approval prompt interrupting the flow.[^f04]
+
+[^f03]: Research Packet E, F-03: 3,301 `permission-mode` records across the primary project; 100% read `bypassPermissions`. Global `settings.json` also sets `skipDangerousModePermissionPrompt: true`.
+[^f04]: Research Packet E, F-04: `alwaysThinkingEnabled: true` and `effortLevel: "high"` in `~/.claude/settings.json`, no per-project override observed.
+
+The single guardrail is a `PreToolUse` hook on every `Bash` call containing `git commit`. It intercepts the command, checks that `git config user.name` and `user.email` match the expected identity, and scans the commit message for AI-attribution patterns (`Co-Authored-By: Claude`, `Generated with Claude`, emoji indicators). Any match blocks the commit.[^f05]
+
+[^f05]: Research Packet E, F-05: `verify-commit.sh` reads `tool_input.command`, checks identity, then `grep -Eiq` for attribution strings. It is global — applies to every project on the machine.
+
+<Callout type="note" title="Full autonomy + one targeted guardrail">
+The trust model here is deliberate: unlimited file writes and shell calls, but the one irreversible shared side-effect — the git history — has a hook that enforces correctness. The hook does not slow down ordinary work; it only fires on commits, and only blocks when something is actually wrong.
+</Callout>
+
+For a feature of moderate size, the implementation session looks like: a short prompt describing the outcome (often accompanied by a screenshot if it is a UI change[^f19]), Claude reads the relevant architecture sections, writes the code, runs typecheck, writes migrations if the schema changed, and opens a draft PR. The author is not typing out instructions for each file — the CLAUDE.md already contains the conventions.
+
+[^f19]: Research Packet E, F-19: 25.3% of user turns across 265 examined turns included screenshots or image attachments. Visual context replaces lengthy descriptions of layout issues.
+
+## Step 3: The PR review pass
+
+Before a PR is merged, the `pr-review-toolkit` skill runs a multi-agent code review. The prompt is typically under ten words: "open pr to dev, do e2e pr review using toolkit."
+
+The toolkit dispatches multiple review agents in parallel, each focused on a different quality dimension — security, correctness, test coverage, API contracts, migration safety. Results from the dynamic roles feature review (8 agents) caught 7 critical and 11 high-severity issues before merge.[^f16] The most consequential finding: a synchronous `jwt.verify()` call inside an async socket handler. A synchronous throw inside a `.then()` chain produces an uncaught exception; in production, this was crashing the process on a predictable interval — roughly every 12 minutes. No automated test had caught it because the test environment did not exercise the crash path.
+
+[^f16]: Research Packet E, F-16: 7 critical + 11 high issues found. Also caught: a hardcoded `ALL_ACTIONS` array that silently dropped 4 new RBAC actions, and a Prisma migration blocked by a view dependency not handled by the migration script.
+
+A second finding from the same review: a hardcoded `ALL_ACTIONS` array that was correct when written but went stale when 4 new RBAC actions were added. The "Add role" button was silently hidden for all users including super-admins. The fix was a one-line change to derive the array from the live schema instead of hardcoding it. The review found it; linear reading of the diff would not have.
+
+```
+Planner (task decomposition)        → Sonnet or higher
+Implementer (writes code + tests)   → Sonnet
+Mechanical verifier (gate check)    → Haiku (cheaper, fast)
+Adversarial reviewer (finds issues) → Sonnet
+Fixer (addresses review findings)   → Sonnet
+```
+
+Model tier selection is deliberate: the audit pipeline (F-14) used Haiku explicitly for the mechanical verification stage — "does the test count match? does the diff cover the finding?" — because it is a pattern-matching problem, not a reasoning problem.[^f14]
+
+[^f14]: Research Packet E, F-14: 123-finding audit remediated in 10 PRs across 7 domain batches; the 5-stage pipeline assigned Haiku to the mechanical verifier stage by design.
+
+## Step 4: Merge and promote
+
+Merging the PR has one concrete gotcha, documented in memory: running `gh pr merge --delete-branch` from inside the worktree being deleted causes the `--delete-branch` step to abort. The merge must happen from the main checkout, not the worktree.[^merge-gotcha]
+
+[^merge-gotcha]: Research Packet E (memory files, `reference_gh_pr_merge_from_worktree.md`): "run gh pr merge from main checkout, not the worktree being merged; otherwise --delete-branch aborts."
+
+After merge to `dev`, the deploy path is: `dev → gcp`. A `gcp-promote` worktree handles this — `git checkout gcp && git merge dev && git push`. Auto-CD (Cloud Build in the `asia-south1` regional pool) fires on that push automatically. There is a hard rule against triggering CD manually: the push already fired it, and a duplicate manual trigger fails on Artifact Registry tag-immutability.[^f26]
+
+[^f26]: Research Packet E, F-26: the full deploy pipeline is triggered by short prompts; the rule against manual CD triggers is stored in memory and enforced by collective habit across sessions.
+
+Verification is done by inspecting the live cluster (`kubectl -n [namespace] get deploy -o jsonpath=...`), the `kustomization.yaml` `newTag`, and the deploy marker commit — not by `gcloud builds list` without `--region=asia-south1`, which shows only the wrong pool and produces false negatives.[^cd-verify]
+
+[^cd-verify]: Research Packet E (memory files, `feedback_cd_no_manual_trigger.md`): "never `gcloud builds list/describe/log` without `--region=asia-south1` — the default region shows PR smoke builds, never CD."
+
+## Step 5: What happens when something goes wrong in production
+
+The typical prod failure pattern in the sessions studied: a column exists in code and in CI (which spins a fresh DB via `db push`), but is missing from the production database because auto-CD runs `migrate deploy` not `db push`, and no migration file was committed.[^f35]
+
+[^f35]: Research Packet E, F-35: multiple memory files dedicated to prod-vs-dev divergence. F-23 documents the prod recovery pattern via `kubectl exec`.
+
+The concrete incident: a `Lead.bestTimeToCall` column was added to the schema and deployed. Production started returning 500 on every `GET /leads` request. Recovery: `kubectl exec -i <pod> -- node -` with a one-off script piped from the local machine. The production container image does not include `scripts/` or `tsx`, so the pattern is streaming pure Node.js via stdin.[^f23]
+
+[^f23]: Research Packet E, F-23: this pattern — `kubectl exec -i pod -- node - < file.js` — was used for a Zoho tags backfill (317 → 2,957 rows), a schema hotfix, and an auth state reset.
+
+<Callout type="warning" title="CI does not see what production sees">
+CI spins a fresh database and applies `db push`. Production runs `migrate deploy` against the live schema. A column that CI has always known about can be invisible to production if no migration file exists. The two gates are not equivalent. Adding a column now means: author a Prisma migration, commit it, and verify it applies cleanly against a prod-schema dump before the deploy lands.
+</Callout>
+
+This failure mode was documented as a named memory file (`project_prod_schema_drift_bestTimeToCall.md`) so that every subsequent session — regardless of topic — carries awareness of it.
+
+## What the cadence looks like at scale
+
+The week-level output across 8 weeks of recorded sessions: 8–17 merged PRs per week, across two repos, covering infrastructure migrations, security remediations, feature development, and observability. Not in one giant context window — in individual sessions, each bounded, each starting with the relevant summary injected by the remember plugin.[^f32]
+
+[^f32]: Research Packet E, F-32: weekly summaries from archive.md. Week of 2026-06-09 alone: 123-finding audit remediated in 10 PRs + 150 tests.
+
+The `/compact` slash command was invoked exactly once across all 76 primary sessions. Sessions do not need manual compaction because the remember plugin handles continuity: a session ends, the summary is extracted and stored, the next session injects it.[^f09]
+
+[^f09]: Research Packet E, F-09: 1 `/compact` invocation found across 76 sessions totaling 64,568 lines and 169 MB.
+
+The high output is not from working faster inside sessions — it is from not losing work between sessions, not losing work to stale worktree bases, and not losing time to review failures that could have been caught by automated passes.
+
+<Mermaid chart={`sequenceDiagram
+    participant Dev as Developer
+    participant WT as Worktree (lux-wt.sh)
+    participant CC as Claude Code Session
+    participant PR as Pull Request
+    participant CD as Auto-CD (Cloud Build)
+
+    Dev->>WT: lux-wt.sh new be feat/feature
+    WT->>WT: base on origin/dev, npm ci, copy .env
+    WT-->>Dev: ready — isolated dir + session context
+
+    Dev->>CC: short prompt + optional screenshot
+    CC->>CC: reads CLAUDE.md, implements, typechecks
+    CC->>PR: gh pr create --base dev
+
+    Dev->>CC: pr review toolkit
+    CC->>PR: multi-agent review pass (security, correctness, coverage)
+    PR-->>Dev: findings list
+
+    Dev->>CC: apply findings, commit, push
+    Dev->>PR: gh pr merge (from main checkout)
+    PR->>CD: push to gcp triggers auto-CD
+    CD-->>Dev: kubectl verify — pod running new image
+`} />
+
+## The generalizable principles
+
+Six things from this case study transfer to any project:
+
+**Invest in the standing document, not the per-prompt context.** A 400-line CLAUDE.md means prompts stay under 80 words. The ratio inverts common intuition.
+
+**Structural enforcement beats reminders.** The SessionStart hook that warns on worktree drift, the PreToolUse hook that blocks wrong-author commits, the `lux-wt.sh` script that enforces the base — none of these depend on remembering to do the right thing. They make the wrong thing harder than the right thing.
+
+**Memory is automated, not curated.** The author does not write session summaries. The remember plugin extracts them. The author curates only the named memory files — decisions with "why" and "how to apply" that need to survive across months, not just days.
+
+**Cheap models for mechanical gates.** Haiku for "does this test count match?" Sonnet for "what is the right abstraction?" Using the wrong tier in either direction costs something real: speed if you over-provision, quality if you under-provision.
+
+**Multi-agent review catches what a single pass misses.** The ensemble saw the JWT synchronous-throw crash. The ensemble saw the stale `ALL_ACTIONS` array. No single reviewer had the combination of breadth and focus to catch both in one pass.
+
+**Prod-vs-dev divergence is a named failure class, not a surprise.** Each incident became a named memory file. Future sessions carry awareness of it. The pattern of `kubectl exec -i pod -- node -` for prod one-offs exists as a reference, not as improvised recovery.
+
+## Recap
+
+A real feature ships through six concrete stages: worktree creation (always from `origin/dev`, always via script), isolated implementation in bypass-permissions mode with a commit hook as the only guardrail, a multi-agent review pass before merge, merge from the main checkout (not the worktree), auto-CD triggered by a push to the deploy branch, and prod verification from the cluster — not from build logs in the wrong region.
+
+The infrastructure that makes this fast — automated memory, structural enforcement, standing architecture docs — is not set up during feature work. It is set up once and then silently maintained. That is the actual leverage point.
+
+The next chapter examines how to build and maintain the CLAUDE.md that makes goal-oriented delegation reliable at this scale.

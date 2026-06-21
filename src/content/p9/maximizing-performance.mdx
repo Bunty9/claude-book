@@ -1,0 +1,134 @@
+# Maximizing performance
+
+Claude Code gives you several levers for tuning how hard the model thinks, how much it spends, and how fast it responds. This chapter maps those levers — effort levels, fast mode, model choice, and the `ultracode` workflow trigger — so you can pick the right setting for each kind of task rather than leaving everything at the default and wondering why some tasks feel sluggish or over-engineered.
+
+## The three dimensions you control
+
+Performance in Claude Code is not a single dial. Three independent dimensions shape the quality and cost of any session:
+
+1. **Effort level** — how deeply the model reasons before acting
+2. **Model selection** — which model (and tier) runs the loop
+3. **Workflow orchestration** — whether a task is handled by one agent or dozens in parallel
+
+These interact but do not collapse into one setting. You can run a lightweight model at maximum effort on a narrow reasoning problem, or run a flagship model at low effort for a quick lookup. The right combination depends on the task.
+
+<Callout type="note" title="Effort is not the same as extended thinking">
+Effort level and extended thinking are controlled independently. Setting `effortLevel: "high"` tells the harness to allocate more reasoning budget per turn. Setting `alwaysThinkingEnabled: true` enables the visible chain-of-thought block that appears before a response. You can enable one, both, or neither. Both options are in `~/.claude/settings.json`. (Source: packet-A, claim on effort levels)
+</Callout>
+
+## Effort levels
+
+Effort levels run from `low` through `medium`, `high`, `xhigh`, to `max`. The harness exposes them in three places:
+
+- **CLI:** `/effort <level>` for the current session — accepts `low`, `medium`, `high`, `xhigh`, `max`, and `ultracode`
+- **Settings:** `effortLevel` key in `settings.json` (persists across sessions) — accepts `low`, `medium`, `high`, `xhigh` (not `max`)
+- **Env:** `CLAUDE_CODE_EFFORT_LEVEL` (overrides the settings key for one run)
+
+The special value `ultracode` is an alias that combines `xhigh` reasoning with automatic workflow orchestration — more on that below. `ultracode` is a CLI and session trigger only; it is not a valid `effortLevel` settings value.
+
+What changes with effort level is the thinking-token budget per turn. More tokens of reasoning generally produces better analysis on complex tasks, but at higher latency and cost. The relationship is not linear: going from `low` to `medium` often produces a visible jump in output quality on ambiguous problems, while `xhigh` vs `high` shows its value mainly on tasks that need genuine multi-step planning.
+
+A practical heuristic:
+
+| Task type | Recommended effort |
+|---|---|
+| Quick lookup, one-liner fix, formatting | `low` |
+| Standard feature work, bug fix, refactor | `medium` (default) |
+| New system design, architecture review, security audit | `high` |
+| Complex multi-file migration, parallel agent dispatch | `xhigh` |
+| Workflow orchestration with dozens of sub-agents | `ultracode` |
+
+<Callout type="tip" title="Set effort globally, override locally">
+If you do most of your work on complex codebases, set `effortLevel: "high"` in your global `~/.claude/settings.json`. Then use `/effort low` in the session when you need a fast one-off answer. This avoids the cost of max-effort on simple tasks while keeping the default high for real work. (Source: packet-A settings reference; real-world usage from packet-E F-04)
+</Callout>
+
+## How `ultracode` and workflows change the picture
+
+When the effort level is `ultracode` — or when you include the word `ultracode` in a prompt — Claude Code does something qualitatively different: it writes a JavaScript orchestration script and hands off execution to the `Workflow` tool rather than handling the task linearly in its own context.
+
+Why this matters:
+
+- **Parallelism at scale.** A workflow can spawn up to 16 concurrent sub-agents (bounded by your machine's CPU). A 123-finding security audit that would take hours sequentially can be fanned out across 7 domain batches with multiple agents per batch. (Source: packet-E F-14: a 123-finding audit was remediated in roughly 2 days using this kind of structured pipeline)
+- **Context isolation.** Sub-agents start with a fresh context containing only their own instructions. Intermediate tool outputs stay in sub-agent context, not the orchestrator's. This prevents the orchestrator's context from bloating as the job scales.
+- **Intermediate results stay in script variables.** The orchestration script holds intermediate data in JavaScript variables, not in Claude's context window. This is critical for tasks that produce large intermediate artifacts.
+
+The trade-off is that workflows cannot accept mid-run user input (only permission prompts can pause them), and the trigger requires `xhigh` reasoning effort — so they cost more per task than a direct response at `medium`.
+
+<Mermaid chart={`graph TD
+    U[User prompt] --> E{Effort level?}
+    E -->|low / medium| D[Direct agent loop\nOne model, sequential turns]
+    E -->|high| D2[Direct agent loop\nMore thinking tokens per turn]
+    E -->|xhigh / ultracode| W[Workflow tool\nOrchestration script]
+    W --> A1[Sub-agent 1]
+    W --> A2[Sub-agent 2]
+    W --> A3[Sub-agent 3]
+    A1 --> R[Results merged\nby script]
+    A2 --> R
+    A3 --> R
+    R --> U2[Final response\nto user]
+`} />
+
+## Fast mode and model selection
+
+"Fast mode" is not a single toggle — it is a combination of choices that reduce latency:
+
+1. **Lower effort level.** The quickest way to get a faster response is to use `/effort low` or `/effort medium`. The model does less reasoning before acting.
+2. **Model selection.** Claude Code lets you configure `model` in `settings.json` and `availableModels` to restrict which models are selectable. Lighter models respond faster and cost less per turn.
+3. **`fastModePerSessionOptIn`.** When set to `true` in settings, fast mode requires explicit per-session opt-in rather than being the default. This is an organizational control, not a performance knob.
+
+The built-in `Explore` sub-agent — used internally for codebase research tasks — runs on a lightweight model by design: read-only, fast, no `CLAUDE.md` loaded. It is a concrete example of the principle that not all agents in a session need the same model or reasoning depth.
+
+<Callout type="warning" title="Lower effort on complex tasks can cost more overall">
+Counterintuitively, setting effort too low on a genuinely complex problem often leads to more turns — the model misses something, backtracks, and retries. For architectural changes or multi-file refactors, `high` or `xhigh` frequently completes in fewer total turns than `medium`, making the net token cost comparable or lower. Measure before assuming lower effort is cheaper.
+</Callout>
+
+## The `DecisionTrees` guide — which mechanism to use when
+
+The interaction below helps you pick the right Claude Code mechanism for a given situation. It covers effort level, workflow vs direct loop, and when to reach for a sub-agent.
+
+<DecisionTrees/>
+
+## Prompt caching: the silent performance win
+
+One lever that operates automatically but rewards awareness: static content in every request — your `CLAUDE.md`, tool definitions, and the system prompt — is automatically prompt-cached after the first request in a session. Subsequent turns in the same session pay a small fraction of the cost to re-process that content.
+
+What this means practically:
+
+- **Long `CLAUDE.md` files are cheap after the first turn.** The cost amortises across every request in the session. A 400-line project context document is not prohibitively expensive if sessions are long.
+- **Starting a new session re-pays the cache warmup cost.** If you frequently open and close short sessions, you lose the caching benefit. Longer focused sessions are more efficient than many short ones.
+- **Tool definitions for MCP servers are deferred by default.** The `ToolSearch` tool loads MCP tool schemas on demand rather than upfront. This keeps context lean at session start and avoids loading schemas for tools you never call. (Source: packet-A, MCP integration section)
+
+## Putting it together: a layered approach
+
+The way power users approach effort and model tuning is layered rather than monolithic:
+
+```
+Global default (settings.json)
+  └── effortLevel: "high"
+  └── alwaysThinkingEnabled: true
+
+Per-session override (/effort)
+  └── /effort low   → quick questions, formatting
+  └── /effort ultracode → large fan-out tasks
+
+Per-agent override (agent frontmatter)
+  └── Explore sub-agent: lightweight model, read-only
+  └── Verify sub-agent: Haiku for mechanical gate checks
+  └── Planner sub-agent: flagship model at xhigh
+```
+
+In practice this means: set a high default so the model performs well on real work, and actively step it down for tasks that don't need it. Do not try to find one global setting that is "good enough" for every task — the tasks are too varied for that to work.
+
+<Callout type="tip" title="Cheap models for mechanical verification">
+In structured pipelines — security audit batches, typesafety sweeps, code review passes — the verification stage is often mechanical: does the output satisfy a rubric? Assign that stage to a lightweight model. The real reasoning load is in the planning and implementation stages, where the flagship model earns its cost. Using the same model for everything is the most common over-spend pattern. (Source: packet-E F-14, F-15: real pipelines used lighter models for gate-check stages)
+</Callout>
+
+## Recap
+
+- **Effort level** (`low` → `max`) controls reasoning depth per turn. Set a high default, override downward for simple tasks.
+- **`ultracode`** combines `xhigh` effort with automatic workflow orchestration — use it for large fan-out tasks where parallelism matters.
+- **Fast mode** is a combination of lower effort and lighter model selection, not a single toggle.
+- **Prompt caching** is automatic and rewards longer, focused sessions over many short ones.
+- **Use cheap models for mechanical stages** in pipelines; reserve the flagship for planning and implementation.
+
+The next chapter covers memory and context management — how to keep sessions productive as they grow, and how to design context structures that stay coherent across long projects.

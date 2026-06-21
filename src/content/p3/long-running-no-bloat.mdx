@@ -1,0 +1,178 @@
+# Long-running tasks without context bloat
+
+The context window is append-only: every file read, tool output, and response accumulates until something gives. This chapter shows you the operator-level techniques for sustaining multi-hour — and multi-day — jobs without drowning the window, triggering runaway compaction, or losing continuity between sessions.
+
+## Why context bloat is an engineering problem, not a UX annoyance
+
+Context growth is not a nuisance. It is a structural constraint that degrades output quality and drives up cost at the same time. When the window fills:
+
+- The model starts dropping earlier reasoning — not because it forgets, but because earlier tokens are literally further from the attention peaks.
+- Compaction runs and collapses detail you may need later.
+- Every subsequent turn pays more in tokens whether or not those old turns are still relevant.
+
+The good news: the shape of the problem is predictable. Tool outputs are the primary driver of fill. Each file read, each shell command, each search result appends to the message array. A single read of a large file or a verbose bash output can consume thousands of tokens in one turn. Understanding this lets you design sessions — not just react to them.
+
+<ContextWindowSim />
+
+Use the simulator above to develop intuition. Switch the preset to **bloated** and drag the turn count upward. Watch how file reads and tool results eat the budget compared to plain messages. Then switch to **lean** and observe how bounded tool calls keep the window stable through the same number of turns.
+
+## The four patterns that cause bloat
+
+Before the fixes, the sources:
+
+**1. Reading files that Claude does not need to write.** Every `Read` of a large file that only provides background context — not something Claude is editing — is often avoidable. Background can live in `CLAUDE.md` or a summary instead.
+
+**2. Verbose bash output.** A command that dumps hundreds of lines of logs, a full `npm install` trace, or a recursive directory listing can fill more context than a dozen normal conversation turns. The default output cap is 30,000 characters per command.
+
+**3. Redundant re-exploration.** Without a persistent knowledge store, a new session re-reads the same files, runs the same searches, and reconstructs the same understanding it built last time. This is wasted context on every session.
+
+**4. Sprawling single sessions.** Trying to do an entire multi-day feature campaign in one session forces every intermediate step — dead ends, diagnostic detours, discarded drafts — to stay in the window until compaction wipes them.
+
+## The operator's playbook
+
+### Pattern 1 — Scope the session to one stage
+
+Long jobs have stages. A campaign to fix 123 security findings across 7 domains is not one session — it is 7 sessions, one per domain batch. Each session starts focused, ends focused, and the window never accumulates the earlier batches' tool noise.
+
+The practical way to enforce this is to name the scope explicitly in the opening prompt:
+
+```
+Batch 2 of the security audit — leads and schema only.
+Fix findings B2-1 through B2-8. Do not touch auth or directory modules.
+```
+
+This is not just good housekeeping. It prevents Claude from chasing related issues in adjacent modules, which would pull those files into context and expand the working set.
+
+<Callout type="tip" title="Worktrees enforce scope at the filesystem level">
+Each stage gets its own git worktree — a separate physical directory on disk, a separate branch, and a separate Claude Code session. Context is isolated per worktree automatically. If Claude is in `feature-batch2/`, it cannot accidentally read or edit files that only belong to batch 1's worktree. Isolation by directory is more reliable than isolation by instruction.
+</Callout>
+
+### Pattern 2 — Automate session memory so you never start cold
+
+The most expensive form of context bloat is not what happens inside a session — it is what happens at the start of the next one. Without memory, every session burns its opening turns re-reading the same files, reconstructing the same architectural understanding, and rediscovering the same sharp edges.
+
+The fix is automated extraction, not manual summarisation. A `PostToolUse` hook can fire a lightweight summariser after every meaningful tool call, accumulating a compressed fact log that persists across sessions. At the next `SessionStart`, the relevant portion is injected into context automatically.
+
+This approach was observed running across more than 1,200 production sessions on a complex two-repo CRM. The manual `/compact` command was invoked exactly once across 76 sessions in the primary project — not because sessions were short (the largest reached 14 MB / 3,575 lines), but because inter-session continuity was automated. The next session always had the previous session's outcome available without re-running any tools. (Source: packet-E, F-09)
+
+The key design choice: store **facts**, not transcripts. A structured memory file for an architectural decision takes a few hundred tokens. A transcript of the session that produced that decision would take tens of thousands.
+
+```
+# project_auth_session.md
+type: reference
+name: Auth session design
+
+Session expiry: 30d/90d via sops-encrypted secret (NOT public.env —
+kustomize deduplicates keys and the env wins, silently dropping sops).
+Email OTP is the sole 2FA path; TOTP columns kept in schema but unused.
+Single-flight refresh: client holds one in-flight promise and queues
+concurrent 401s behind it.
+```
+
+That 60-token reference entry replaces re-reading the auth module, the session model, and the relevant PR description at the start of every subsequent session.
+
+### Pattern 3 — Put knowledge in CLAUDE.md, not in the prompt
+
+`CLAUDE.md` content loads into context on every session, but it is **prompt-cached** after the first request. You pay the encoding cost once per session, not once per turn. (Source: packet-A, §1)
+
+That makes `CLAUDE.md` the right place for:
+- Module maps and ownership
+- Invariants and known sharp edges
+- Naming conventions and schema highlights
+- Anti-patterns to avoid
+
+The wrong place for the same content is the per-session prompt. A 400-line `CLAUDE.md` that covers architecture, conventions, and known gotchas is what allows per-session prompts to stay under 80 words. Short prompts work because long standing documents exist — the ratio inverts common intuition. (Source: packet-E, F-33)
+
+Skills are lazier still: they load only when invoked. Procedures that are used occasionally — deploy runbooks, code review checklists, migration playbooks — belong in skill files, not in `CLAUDE.md`. They contribute zero tokens to sessions that never call them.
+
+### Pattern 4 — Bound your tool calls
+
+Every tool output is a token cost you chose to pay. Before issuing a tool call, ask whether the result is strictly necessary for the current turn's decision, or whether it is background research that could be summarised elsewhere.
+
+Practical bounds:
+
+| Situation | Bounded alternative |
+|---|---|
+| Reading a large file for background | Store the relevant excerpt in `CLAUDE.md` or a memory file |
+| Running a noisy build command | Pipe output through `grep` or `tail` to limit what lands in context |
+| Exploring a codebase you've visited before | Use a memory file with the module map instead of re-running searches |
+| Listing all files in a directory | Use `Glob` with a specific pattern rather than a recursive listing |
+
+<Callout type="warning" title="The 30 K output cap is a floor, not a ceiling">
+Bash output is capped at 30,000 characters by default. That cap protects against runaway verbosity, but 30,000 characters is still a substantial token cost. For diagnostic commands, always pipe through a filter — the cap does not help if the first 30 K characters of a log are what you wanted to avoid.
+</Callout>
+
+### Pattern 5 — Use compaction as a scheduled checkpoint, not an emergency brake
+
+The `/compact` command summarises older history in place and emits a `compact_boundary` marker. Auto-compact fires automatically when the context approaches the limit (controlled by `autoCompactEnabled`, on by default). The `PreCompact` and `PostCompact` hook events fire around it.
+
+The problem with relying on auto-compact is that it runs at the worst moment — when the window is nearly full — and at that point important intermediate state may already be degraded. A better pattern for sessions that will genuinely need to run long:
+
+1. **Scope the session tightly** (pattern 1) so it does not reach auto-compact territory.
+2. If a session must be long, invoke `/compact` proactively at a natural breakpoint — after a diagnostic phase concludes, before starting an implementation phase — not reactively when the model starts forgetting.
+3. For cross-session continuity, rely on external memory (pattern 2) rather than on compaction, which collapses but does not persist.
+
+## Parallel agents as a context-isolation primitive
+
+The deepest form of context isolation is running separate agents. When a sub-agent finishes and returns to the parent, only the final summary crosses the boundary — not the thousands of tokens of intermediate tool outputs and reasoning the sub-agent accumulated. (Source: packet-A, §7)
+
+This is why parallel sub-agent dispatch works well for large sweeps. A typesafety campaign that eliminated 386 TypeScript errors used three parallel sub-agents in the sweep phase, each scoped to a disjoint file set. Each agent built up its own context working through its files; the parent only received a compact outcome report from each. (Source: packet-E, F-15)
+
+<Mermaid chart={`
+flowchart LR
+    P["Parent agent\n(thin context)"]
+    A1["Sub-agent A\nleads + auth\n(deep context)"]
+    A2["Sub-agent B\nsettings + ops\n(deep context)"]
+    A3["Sub-agent C\ndirectory + tc\n(deep context)"]
+
+    P -- "scoped task" --> A1
+    P -- "scoped task" --> A2
+    P -- "scoped task" --> A3
+    A1 -- "summary only" --> P
+    A2 -- "summary only" --> P
+    A3 -- "summary only" --> P
+`} />
+
+The parent's context stays thin. The sub-agents' contexts can grow as large as needed — independently, in parallel — and the cost never rolls back into the parent's window.
+
+The constraint: tasks dispatched to parallel agents must operate on disjoint files. Two agents editing the same file simultaneously will produce conflicts. Scope partitioning is the prerequisite for safe parallel dispatch.
+
+<Callout type="note" title="Named subagent campaigns span multiple sessions">
+A named agent is not a session — it is a tag. The `custom-role-mgmgt` campaign that ran 275 recorded invocations did so across multiple sessions over roughly two weeks, each individual session staying focused on one stage. The name gives you an external handle to group related work without forcing it into a single sprawling session. (Source: packet-E, F-24)
+</Callout>
+
+## Designing for longevity: the checklist
+
+Before starting a job that will run long:
+
+```
+□ Split the job into stages. Define the scope of this session explicitly.
+□ Create a dedicated worktree for the stage (never work in the main checkout).
+□ Confirm that CLAUDE.md covers the architectural context needed.
+□ Check whether a prior session's memory file is available and inject it.
+□ Identify which tool calls are discovery (cache in memory) vs. action (necessary now).
+□ Pre-approve tools via allow rules so permission prompts cannot interrupt the run.
+□ Set a maxTurns or maxBudgetUsd guard if using the SDK.
+□ Schedule a /compact call at the natural midpoint if the session will be very long.
+□ After the session: write a memory file with the outcome and any decisions made.
+```
+
+The last step is as important as the first. Decisions documented after a session are available at zero token cost in the next one. Decisions left only in the transcript force the next session to re-read, re-discover, or worse, re-decide.
+
+## What a lean session looks like
+
+A well-structured session for a large job:
+
+1. **Opens with injected memory** — the previous session's outcome in a few hundred tokens, not a re-exploration.
+2. **Reads only what it needs to write** — files under active modification, not background files.
+3. **Uses bounded bash output** — piped, filtered, or truncated before hitting context.
+4. **Stays scoped to one domain** — touches a coherent set of files, not the whole codebase.
+5. **Ends by writing a memory file** — the outcome, any decisions, any new sharp edges discovered.
+
+The session may still run for many turns and many thousands of tokens. But the tokens it spends are on the work itself — not on re-learning the codebase, not on verbose noise, and not on carrying the weight of six previous sessions' tool outputs.
+
+## Recap
+
+Context bloat is a design problem with design solutions. The window is append-only and tool outputs are the primary driver of fill. The techniques that contain it — scoped sessions, automated cross-session memory, purpose-built `CLAUDE.md` content, bounded tool calls, proactive compaction, and parallel agents as isolation primitives — all share the same underlying logic: spend context tokens on decisions, not on rediscovery.
+
+The next chapter covers dynamic workflows — the mechanism that moves orchestration logic out of Claude's context window entirely and into executable JavaScript, letting you coordinate hundreds of agents without any of their intermediate work touching the coordinator's window.

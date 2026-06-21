@@ -1,0 +1,207 @@
+# Settings, env & config
+
+Claude Code's behaviour is shaped by a layered configuration system: a structured `settings.json` file for persistent preferences and rules, environment variables for one-off or deployment-specific overrides, and a scope hierarchy that lets user, project, and managed (org-wide) settings coexist without conflict. This chapter maps that system precisely so you know exactly where to put a setting, when a variable takes precedence, and how to debug unexpected behaviour when something is not working as expected.
+
+## The two knobs: settings vs. environment variables
+
+Claude Code distinguishes between two kinds of configuration:
+
+- **`settings.json`** — the persistent, structured store for preferences, permission rules, hooks, MCP server declarations, and any key/value environment pairs you want injected at startup. Lives at known paths; committed or not depending on scope.
+- **Environment variables** — classic shell-level overrides. Some are consumed by the Claude Code process itself; others are forwarded into every `Bash` tool call Claude makes. Variables take effect at process start and do not survive between shell sessions unless you set them in your shell profile or the `env` block of `settings.json`.
+
+The relationship is largely orthogonal: most settings have no environment-variable equivalent, and many environment variables have no settings counterpart. The exceptions (where both exist) follow a predictable rule — the environment variable wins for the current invocation, the settings value is the persistent default.
+
+## The scope hierarchy
+
+Claude Code merges settings from five layers in a fixed priority order. A key present at a higher priority wins; lower-priority values are ignored for that key.
+
+<Mermaid chart={`flowchart TD
+    M["Managed\n(MDM / org policy)"]
+    C["CLI args\n(--allowedTools, --model, …)"]
+    L[".claude/settings.local.json\n(personal, gitignored)"]
+    P[".claude/settings.json\n(project, committed)"]
+    U["~/.claude/settings.json\n(user, all projects)"]
+
+    M -->|highest priority| C --> L --> P --> U
+`} />
+
+**Managed** sits at the top and cannot be overridden by any user or project setting. It is distributed via MDM or a server configuration endpoint — the mechanism enterprises use to enforce org-wide policy. When `allowManagedPermissionRulesOnly: true` is set there, users and projects cannot add their own permission rules at all.
+
+**CLI arguments** (`--allowedTools`, `--disallowedTools`, `--model`, `--permission-mode`) apply for a single invocation. They are useful in scripts and CI where you want a per-run override without touching any file.
+
+**Local** (`.claude/settings.local.json`) is gitignored by convention. Use it for personal tweaks — your own allow rules, your preferred effort level — that should not affect teammates.
+
+**Project** (`.claude/settings.json`) is committed alongside the code. Every session that opens this project directory — yours, your teammate's, CI — gets the same project-level settings. This is the right place for permission rules that reflect what the codebase legitimately needs.
+
+**User** (`~/.claude/settings.json`) is the baseline for all your projects. Think of it as your personal global defaults: preferred model, editor mode, language preference.
+
+<Callout type="tip" title="Put allow rules where the trust actually lives">
+If a Bash command is always safe for a specific project (e.g., `npm run build`), commit it in `.claude/settings.json` so the whole team benefits and CI does not prompt. If it is only safe for you personally (e.g., `Bash(kubectl *)`), put it in `settings.local.json` or your user settings. If a command is unsafe for anyone, add a `deny` rule in the project settings.
+</Callout>
+
+## The `settings.json` file structure
+
+The file is plain JSON. All keys are optional — you only need the keys you actually want to change. Here is a representative project-level file showing the most commonly needed sections:
+
+```json
+{
+  "model": "claude-sonnet-4-5",
+  "effortLevel": "high",
+  "permissions": {
+    "allow": [
+      "Bash(npm run *)",
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Edit(/src/**)",
+      "WebFetch(domain:docs.example.com)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Read(~/.ssh/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/audit.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "env": {
+    "NODE_ENV": "development",
+    "MYAPP_API_URL": "http://localhost:4000"
+  }
+}
+```
+
+A few structural notes:
+
+- The `permissions` object takes `allow` and `deny` arrays. Deny beats allow when both match a given tool call.
+- The `hooks` object is keyed by event name (e.g., `PreToolUse`, `Stop`, `SessionStart`). Each event maps to an array of matchers.
+- The `env` object injects key/value pairs into the Claude Code process environment at startup — making them available both to Claude's reasoning and to every `Bash` command that runs.
+
+## Key settings categories
+
+Claude Code exposes more than 80 settings keys. Rather than enumerate them all, the table below groups the most practically important ones by area:
+
+| Area | Key examples | What they control |
+|---|---|---|
+| **Model** | `model`, `fallbackModel`, `effortLevel`, `alwaysThinkingEnabled` | Which model runs, fallbacks when overloaded, reasoning depth |
+| **Display** | `editorMode`, `language`, `prefersReducedMotion`, `axScreenReader` | Vim keys, preferred response language, accessibility |
+| **Memory & files** | `autoMemoryEnabled`, `fileCheckpointingEnabled`, `cleanupPeriodDays` | Auto-memory read/write, `/rewind` snapshots, session file retention |
+| **Permissions** | `permissions`, `disableAutoMode` | Allow/deny rules, prevent auto mode |
+| **MCP servers** | `enableAllProjectMcpServers`, `enabledMcpjsonServers`, `disabledMcpjsonServers` | Which MCP servers load from `.mcp.json` |
+| **Hooks** | `hooks`, `disableAllHooks` | Lifecycle event handlers |
+| **Features** | `autoCompactEnabled`, `disableWorkflows`, `disableBundledSkills` | Toggle major subsystems |
+| **Auth** | `apiKeyHelper`, `gcpAuthRefresh`, `awsCredentialExport` | Scripts that produce credentials dynamically |
+| **Attribution** | `attribution`, `includeGitInstructions` | Commit authorship, git workflow instructions |
+| **Org (Managed only)** | `claudeMd`, `companyAnnouncements`, `parentSettingsBehavior`, `policyHelper` | Org-wide CLAUDE.md, startup messages, settings merge behaviour |
+
+Two settings deserve extra attention because they are subtle:
+
+**`parentSettingsBehavior`** (Managed only, added in v2.1.133) controls how a managed settings layer interacts with lower layers. The default `"first-wins"` means managed keys shadow any project/user equivalent. `"merge"` allows the managed layer to extend rather than replace arrays like `permissions.allow` — useful when you want to enforce some org rules while still allowing projects to add their own.
+
+**`policyHelper`** (Managed only, added in v2.1.136) lets managed settings be generated dynamically by an executable rather than baked into a static file. The executable runs at session start and returns a settings JSON blob. This enables conditional policies — e.g., different rules for engineers vs. contractors — without redeploying configuration.
+
+## Environment variables
+
+Environment variables are the escape hatch for one-off or system-level control. Some act before `settings.json` is even read (e.g., credential variables); others fine-tune tool behaviour deep in the runtime:
+
+```
+# Authentication
+ANTHROPIC_API_KEY        — API key for Anthropic-hosted endpoints
+ANTHROPIC_MODEL          — Override default model for this invocation only
+
+# Tool behaviour
+BASH_DEFAULT_TIMEOUT_MS  — Override the 2-minute Bash default timeout
+BASH_MAX_TIMEOUT_MS      — Override the per-call maximum (ceiling)
+BASH_MAX_OUTPUT_LENGTH   — Override the 30 000-char Bash output cap
+
+# Feature flags
+DISABLE_TELEMETRY        — Disable all telemetry (also disables Monitor tool)
+DISABLE_AUTO_COMPACT     — Prevent automatic context compaction
+CLAUDE_CODE_DISABLE_AUTO_MEMORY — Disable cross-session auto-memory
+CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING — Disable /rewind snapshots
+
+# Shell state
+CLAUDE_ENV_FILE          — Path to a file whose KEY=value lines are injected
+                           into every Bash command for the session
+CLAUDE_CODE_EFFORT_LEVEL — Set effort level (overrides effortLevel setting)
+```
+
+`CLAUDE_ENV_FILE` is worth dwelling on. Unlike `env` in `settings.json` (which sets variables in the Claude Code process environment), `CLAUDE_ENV_FILE` is specifically designed for variables that need to be present inside `Bash` subshells — think tokens that expire and need refreshing, or project-specific shell state. A `SessionStart` hook can write fresh `KEY=value` lines to this file, and Claude Code will source them into every subsequent `Bash` call for the session. This is the correct pattern for dynamic credentials.
+
+<Callout type="note" title="env in settings.json vs. CLAUDE_ENV_FILE">
+`settings.json` → `env` injects variables into the Claude Code process when it starts. This makes them visible to Claude's reasoning and to tool calls. `CLAUDE_ENV_FILE` injects variables specifically into `Bash` subshells, and it can be updated mid-session (e.g., by a hook) so refreshed credentials are picked up without restarting. Use `env` for static values; use `CLAUDE_ENV_FILE` for values that need to refresh.
+</Callout>
+
+## Config layering end to end
+
+To make layering concrete, consider what happens when Claude Code resolves the `model` setting at session start:
+
+<Mermaid chart={`flowchart LR
+    A["Managed settings\nmodel: claude-opus-4"] -->|wins| RESULT["Effective model:\nclaude-opus-4"]
+    B["CLI: --model claude-haiku-4"] -->|overridden| A
+    C[".claude/settings.local.json\nmodel: claude-sonnet-4-5"] -->|overridden| B
+    D[".claude/settings.json\nno model key"] -->|overridden| C
+    E["~/.claude/settings.json\nmodel: claude-haiku-4"] -->|overridden| D
+
+    style A fill:#e8f4fd,stroke:#3b82f6
+    style RESULT fill:#d1fae5,stroke:#10b981
+`} />
+
+If no managed settings exist, the CLI arg would win. Remove the CLI arg and local settings win. The user settings at the bottom act as the fallback when nothing above specifies the key.
+
+The same priority chain applies to `permissions`, `hooks`, `env`, and every other key.
+
+## Debugging config problems
+
+When Claude is behaving unexpectedly — prompting when it should not, refusing a tool call, running with the wrong model — the diagnosis usually lives in the settings chain. Three commands help:
+
+- `/config` — opens the interactive configuration UI. Shows the current effective value for every key and lets you change most of them in place.
+- `/permissions` — lists every active allow and deny rule along with which scope each came from (user, project, local, managed). Run this before a long agentic task to confirm the allow list matches what the task needs.
+- `/doctor` — runs a health check on the Claude Code installation, including settings file validity, MCP server connectivity, and credential status.
+
+A common trap: you add an allow rule to `.claude/settings.json` and the prompt still appears. Check whether `allowManagedPermissionRulesOnly: true` is set in managed settings — if so, your project-level rule is silently ignored. Another: you set `model` in your user settings but a different model runs. Check whether the project or local file overrides it (they take priority).
+
+<Callout type="warning" title="settings.local.json is gitignored but not secret">
+`.claude/settings.local.json` is excluded from git by convention, but it is still a plain text file on disk. Do not put secrets, API keys, or credentials in it. Use `CLAUDE_ENV_FILE`, a credential helper via `apiKeyHelper`, or your system keychain for anything sensitive.
+</Callout>
+
+## The `env` block as a convenience pattern
+
+For teams who want a repeatable local dev environment without requiring developers to set shell variables manually, the `env` block in the project `settings.json` is a clean solution:
+
+```json
+{
+  "env": {
+    "NODE_ENV": "development",
+    "LOG_LEVEL": "debug",
+    "API_BASE_URL": "http://localhost:4000"
+  }
+}
+```
+
+Every session that opens the project gets these variables automatically — no shell profile edits required. Because the file is committed, new team members get the same environment as everyone else on the first `git clone`.
+
+For values that differ per developer (personal access tokens, local port overrides), put the `env` block in `settings.local.json` instead — same structure, personal scope.
+
+## Recap
+
+Claude Code's configuration system has two instruments — **`settings.json`** for structured, persistent preferences and **environment variables** for process-level and dynamic overrides — resolved through a five-level priority chain: Managed > CLI args > Local > Project > User.
+
+The practical rules:
+- Commit project-appropriate allow rules and `env` values in `.claude/settings.json`.
+- Use `.claude/settings.local.json` for personal overrides and per-developer env vars.
+- Use `CLAUDE_ENV_FILE` for dynamic credentials that need to refresh mid-session.
+- Use CLI args for one-off per-invocation overrides (CI is a natural home for this).
+- Use `/config`, `/permissions`, and `/doctor` to inspect the effective resolved state when something does not behave as expected.
+
+**Next:** the [Hooks & automation](/c/hooks-automation) chapter shows how to attach shell scripts and SDK callbacks to the 30 named lifecycle events — turning configuration into programmable behaviour.

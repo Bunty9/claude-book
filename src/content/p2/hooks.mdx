@@ -1,0 +1,321 @@
+# Hooks — automating harness behavior
+
+Hooks let you wire deterministic behavior into the Claude Code harness itself — scripts that run when sessions start, before a tool fires, after Claude responds, or at a dozen other moments in the agent lifecycle. By the end of this chapter you will know what hook events exist, how to configure them, and how to use them to enforce policies, inject context, and automate repetitive setup without relying on Claude's attention or memory.
+
+## The problem hooks solve
+
+Claude Code is good at reasoning about what to do. It is less suited to *mechanically enforcing* that something always happens — log every shell command, block `rm -rf` before it runs, or populate an environment variable the moment a session opens. Those tasks need code that runs reliably regardless of what Claude decides to do next.
+
+Hooks are that code. They are scripts (or SDK callback functions) that the harness executes at named lifecycle events. The harness calls them, not Claude. They can read context about what is happening, react to it, and in some cases block the action entirely before Claude ever sees a result.
+
+<Callout type="note" title="Hooks vs. permission rules">
+Permission rules answer a yes/no question: is this tool call allowed? Hooks answer a richer question: what should happen around this event? A hook can approve or deny, but it can also inject extra context, log to a file, send a Slack message, mutate a tool's input before it runs, or replace its output before Claude reads it. Think of rules as static filters and hooks as dynamic logic.
+</Callout>
+
+## The thirty hook events
+
+The harness exposes thirty named events, organized into six phases. Every event delivers a JSON payload to your script on stdin, containing at minimum `session_id`, `cwd`, and `hook_event_name`.
+
+<Mermaid chart={`
+flowchart TD
+    subgraph Session["Session phase"]
+        SS[SessionStart]
+        SE[SessionEnd]
+        SU[Setup]
+    end
+
+    subgraph Prompt["Prompt phase"]
+        UPS[UserPromptSubmit]
+        UPE[UserPromptExpansion]
+        Stop[Stop]
+        SF[StopFailure]
+    end
+
+    subgraph Tool["Tool phase"]
+        PTU[PreToolUse]
+        PoTU[PostToolUse]
+        PoTUF[PostToolUseFailure]
+        PoTB[PostToolBatch]
+        PR[PermissionRequest]
+        PD[PermissionDenied]
+    end
+
+    subgraph Agent["Agent / task phase"]
+        AS[SubagentStart]
+        ASt[SubagentStop]
+        TC[TaskCreated]
+        TComp[TaskCompleted]
+        TI[TeammateIdle]
+    end
+
+    subgraph Config["File / config phase"]
+        FC[FileChanged]
+        CC[CwdChanged]
+        Cfg[ConfigChange]
+        IL[InstructionsLoaded]
+        WC[WorktreeCreate]
+        WR[WorktreeRemove]
+    end
+
+    subgraph Notify["Notification / context"]
+        N[Notification]
+        MD[MessageDisplay]
+        PC[PreCompact]
+        PoC[PostCompact]
+        E[Elicitation]
+        ER[ElicitationResult]
+    end
+
+    SS --> Prompt
+    Prompt --> Tool
+    Tool --> Agent
+    SE
+`} />
+
+### Which events can block
+
+Most events are observational — the hook runs, does whatever it likes, and the harness continues regardless of what it returns. A handful of events are **blockable**: exit with code 2 and the harness stops the action, using your script's stderr as the error message shown to the user.
+
+| Blockable event | What gets blocked |
+|---|---|
+| `UserPromptSubmit` | Entire prompt — Claude never sees it |
+| `PreToolUse` | The tool call — Claude is told it was denied |
+| `PermissionRequest` | The permission dialog — auto-deny or auto-allow |
+| `Stop` | Claude finishing — inject more context to continue |
+| `SubagentStop` | Subagent completing — validate output before returning it |
+
+Every other event: exit 2 shows stderr as a warning, but execution continues.
+
+## Configuring a hook
+
+Shell-command hooks live in `settings.json` under the `hooks` key. The structure is:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/your-script.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Each entry under an event name is a **matcher group**: a `matcher` pattern that filters which tool calls (or agents, etc.) this hook applies to, plus a `hooks` array of command entries to run when matched.
+
+### Matcher rules
+
+The `matcher` field follows a three-way rule:
+
+- Omitted, empty, or `"*"` — matches everything
+- Letters, digits, underscores, and pipe characters only — treated as an exact string or pipe-separated list (`"Bash|Edit"`)
+- Anything else — treated as a JavaScript regular expression (`"^mcp__"` matches all MCP tools)
+
+MCP tools are always named `mcp__<server>__<action>`, so the regex pattern `^mcp__` is the idiomatic way to gate all MCP tool calls at once.
+
+The `if` field (optional) adds a permission-rule condition — evaluated only on tool events. For example, `"if": "Bash(rm *)"` means the hook fires only when the `Bash` matcher has already matched *and* the command matches `rm *`.
+
+### Exit codes and stdout
+
+Your script communicates back to the harness through exit codes and stdout:
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Success — parse stdout for a JSON control object |
+| `2` | Blocking error — stop the action, show stderr |
+| Anything else | Non-blocking — show stderr, continue |
+
+When you exit 0, stdout is parsed as JSON. The universal fields are:
+
+```json
+{
+  "continue": true,
+  "suppressOutput": false,
+  "systemMessage": "Optional string injected as a system message"
+}
+```
+
+Event-specific fields go under `hookSpecificOutput`. The most useful ones:
+
+**On `PreToolUse`:**
+```json
+{
+  "hookSpecificOutput": {
+    "permissionDecision": "allow",
+    "updatedInput": { "command": "npm run test -- --watchAll=false" }
+  }
+}
+```
+`updatedInput` lets you rewrite the tool's input before it executes — for example, append a safety flag to every `npm` invocation.
+
+**On `PostToolUse`:**
+```json
+{
+  "hookSpecificOutput": {
+    "additionalContext": "Note: this file is owned by the payments team.",
+    "updatedToolOutput": "... replaced tool output ..."
+  }
+}
+```
+`additionalContext` injects a message Claude reads as extra context. `updatedToolOutput` replaces what Claude sees from the tool entirely — useful for stripping secrets from command output before they enter the model's context.
+
+**On `SessionStart`:**
+```json
+{
+  "hookSpecificOutput": {
+    "additionalContext": "Today is Monday. Sprint ends Friday.",
+    "sessionTitle": "payments-refactor",
+    "watchPaths": ["/path/to/watch"],
+    "initialUserMessage": "Run our project health check script."
+  }
+}
+```
+
+## Four patterns worth knowing
+
+### 1. Audit log every shell command
+
+A `PreToolUse` hook on `Bash` can write every command to a structured log before it runs. This is observational — exit 0, return nothing — so it never blocks Claude:
+
+```bash
+#!/usr/bin/env bash
+# Reads JSON from stdin; logs to ~/.local/state/claude/audit.log
+INPUT=$(cat)
+COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // ""')
+TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+echo "{\"ts\":\"$TIMESTAMP\",\"cmd\":$(echo "$COMMAND" | jq -R .)}" \
+  >> ~/.local/state/claude/audit.log
+exit 0
+```
+
+Register it once in `~/.claude/settings.json` and every session on this machine logs shell commands automatically.
+
+### 2. Block dangerous commands
+
+A `PreToolUse` hook can enforce a blocklist. Exit 2 to reject:
+
+```bash
+#!/usr/bin/env bash
+COMMAND=$(cat | jq -r '.tool_input.command // ""')
+
+BLOCKLIST=(
+  "git push --force"
+  "git push -f"
+  "rm -rf /"
+)
+
+for pattern in "${BLOCKLIST[@]}"; do
+  if echo "$COMMAND" | grep -qF "$pattern"; then
+    echo "Blocked: '$pattern' is on the project blocklist." >&2
+    exit 2
+  fi
+done
+
+exit 0
+```
+
+<Callout type="warning" title="Don't rely on string matching alone">
+Pattern matching on shell commands is useful but not a security boundary. A sophisticated prompt can construct blocked commands indirectly (via a script file, for example). For genuine isolation, combine hooks with the OS-level sandboxed Bash tool, which enforces constraints at the process level regardless of how the command arrives.
+</Callout>
+
+### 3. Inject project context at session start
+
+`SessionStart` fires every time a session opens, including on resume and after `/clear`. Use it to inject fresh context that would otherwise require Claude to go looking:
+
+```bash
+#!/usr/bin/env bash
+BRANCH=$(git -C "$CLAUDE_PROJECT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+OPEN_PRS=$(gh pr list --json number,title --limit 3 2>/dev/null | jq -c '.' || echo '[]')
+
+cat <<EOF
+{
+  "hookSpecificOutput": {
+    "additionalContext": "Current branch: $BRANCH\nOpen PRs (first 3): $OPEN_PRS",
+    "sessionTitle": "$BRANCH"
+  }
+}
+EOF
+```
+
+The harness passes this JSON back to Claude as session context. Claude starts every session already knowing the branch and recent PR state, without needing to run `git` or `gh` itself.
+
+### 4. Persist environment variables across Bash calls
+
+Claude Code's Bash tool does not persist environment variables between calls by default. The `CLAUDE_ENV_FILE` environment variable (available to all hooks) points to a file whose contents are sourced before each Bash invocation. A `SessionStart` hook can pre-populate it:
+
+```bash
+#!/usr/bin/env bash
+# Load project-specific env into the session's persistent env file
+if [ -f "$CLAUDE_PROJECT_DIR/.env.claude" ]; then
+  cat "$CLAUDE_PROJECT_DIR/.env.claude" >> "$CLAUDE_ENV_FILE"
+fi
+exit 0
+```
+
+Any `KEY=value` lines written to `$CLAUDE_ENV_FILE` by a `SessionStart`, `Setup`, `CwdChanged`, or `FileChanged` hook persist for the rest of that session's Bash calls — no need to `source` manually on every turn.
+
+## Where to put hook configuration
+
+Hooks follow the same scope hierarchy as all settings:
+
+| Location | File | Who sees it |
+|---|---|---|
+| Managed (org) | MDM / policy server | Everyone in the org |
+| Local (yours only) | `.claude/settings.local.json` | You, not committed |
+| Project (shared) | `.claude/settings.json` | Whole team |
+| User (personal) | `~/.claude/settings.json` | You, all projects |
+
+A common split: audit logs and personal blocklists in `~/.claude/settings.json`; project-specific context injection in `.claude/settings.json` (committed, so the whole team gets it).
+
+The `disableAllHooks: true` settings key disables every hook for a session — useful when debugging whether a hook is causing unexpected behavior. `allowManagedHooksOnly: true` (Managed-only) prevents project or user settings from adding hooks on top of the org baseline.
+
+## Hooks in the Agent SDK
+
+If you are embedding the agent loop in an application via the TypeScript or Python SDK, hooks are callback functions rather than shell commands. You pass them via `options.hooks` in the `query()` call:
+
+```typescript
+import { query } from '@anthropic-ai/claude-agent-sdk'
+
+for await (const message of query({
+  prompt: 'Refactor the payments module.',
+  hooks: {
+    PreToolUse: [
+      {
+        matcher: 'Bash',
+        hooks: [
+          async ({ input }) => {
+            auditLog(input.command)
+            return { continue: true }
+          }
+        ]
+      }
+    ]
+  }
+})) {
+  // handle messages
+}
+```
+
+SDK callback hooks run in your application process, not in Claude's context, so they carry no token cost. The most restrictive result wins when multiple hooks match the same event: if any hook returns `deny`, the tool is denied regardless of what others return.
+
+A few SDK-specific notes grounded in the official docs:
+
+- `PostToolBatch` and `MessageDisplay` are TypeScript-only SDK events — they do not exist as shell hook events.
+- The Python SDK does not support `SessionStart` and `SessionEnd` as callback hooks; use shell command hooks via `settingSources` instead.
+- Mark a hook `async: true` (TypeScript) or `async_: True` (Python) to fire-and-forget side effects without blocking the agent.
+
+## Recap
+
+Hooks are the harness's event bus. Thirty named events span the full session lifecycle — from `SessionStart` to `SessionEnd`, from `PreToolUse` to `PostToolUse`, from `PermissionRequest` to `SubagentStop`. Shell scripts get the event payload on stdin, communicate back via exit codes and JSON on stdout, and can block actions by exiting with code 2. The SDK surfaces the same events as in-process callbacks with no token cost.
+
+The four most immediately useful patterns are: audit logging (exit 0, write a log), blocking dangerous commands (exit 2 on match), injecting project context at session start (`additionalContext` from `SessionStart`), and persisting environment variables via `CLAUDE_ENV_FILE`.
+
+**Next:** the [Settings reference](/c/settings) chapter maps every `settings.json` key and environment variable — including the `hooks` and `permissions` objects you have been configuring throughout this part.

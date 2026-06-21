@@ -1,0 +1,180 @@
+# Documentation as context
+
+Every Claude Code session starts with a fixed mental model of your codebase — one built entirely from what you have written down in advance. This chapter shows you how to write documentation that Claude can actually use: what to put in `CLAUDE.md`, which facts belong in memory files, and how to structure domain knowledge so that short prompts produce correct, informed work.
+
+## Why documentation beats per-prompt explanation
+
+The first instinct, when Claude gets something wrong, is to write a longer prompt. That instinct is usually backwards. A longer prompt fixes one conversation; good documentation fixes every conversation.
+
+The underlying reason is mechanical. Claude Code loads `CLAUDE.md` into the context at the start of every session and re-injects it on every request (prompt-cached after the first, so it carries no per-turn cost). The architecture docs, conventions, and known gotchas you write there are available before you type a single word. Conversely, context that exists only in your head — or that you repeat verbally — evaporates when the session ends.
+
+From the research behind this book: a real production codebase accumulates a `CLAUDE.md` of 400+ lines covering architecture, conventions, schema highlights, known gotchas, and sharp edges. Human prompts in that project average 10–80 words. The ratio inverts the common instinct: invest in the standing document, not the per-prompt context. The documentation carries the instructional weight; the prompt carries only the goal.
+
+<Callout type="tip" title="Short prompts are a sign of good docs, not lazy prompts">
+When your CLAUDE.md is thorough, a prompt like "fix the round-robin assignment bug" is enough. Claude already knows the assignment algorithm, which files implement it, and what invariants it must preserve. You only need to name the goal.
+</Callout>
+
+## What CLAUDE.md is (and is not)
+
+`CLAUDE.md` is a Markdown file that Claude Code loads automatically. Multiple can exist — one at the project root, one in each subdirectory down to the git root, and a personal one at `~/.claude/CLAUDE.md` that applies to every project. All are loaded and composed; the personal file acts as global standing instructions.
+
+What it is **not**: a substitute for code comments, a place to re-document your API, or a place to duplicate things already captured in your schema. Its job is to give Claude the context a new senior engineer would need on day one — the things that are not obvious from reading the code.
+
+Good things to put in `CLAUDE.md`:
+
+- **Architecture in plain language.** How the system fits together: which processes talk to which, what the data flow looks like end to end, which repos/services are active vs. archived.
+- **Naming and structural conventions.** The module layout, file-naming patterns, which packages are canonical for which jobs.
+- **The "do not do this" list.** Gotchas, anti-patterns, and foot-guns that look reasonable on the surface but break invariants. These are the highest-value lines you can write.
+- **RBAC, auth, and permission rules.** Any system where getting it wrong is a security issue deserves explicit prose.
+- **Known sharp edges and open bugs.** A bullet list of things that are broken or incomplete. When you fix one, delete the bullet. When you find a new one, add it. This list is more valuable than almost any other section.
+
+Things to leave out:
+
+- Step-by-step tutorials — those belong in `README.md` or onboarding docs.
+- Information that is obvious from reading the code.
+- Vague advice ("write clean code", "test everything").
+
+## A concrete structure that works
+
+Below is the skeleton of a `CLAUDE.md` that reflects what effective practitioners actually ship. Adapt the section names to your domain.
+
+```markdown
+# CLAUDE.md
+
+## Active surface
+
+Which repos / packages are live vs. archived. Claude should not create
+branches or PRs in archived areas; list them explicitly.
+
+## Architecture (high level)
+
+A plain-English description or ASCII diagram of how the system fits together.
+Services, their ports, their responsibilities. The data flow for the most
+important operations (webhook → queue → worker → DB is more useful than
+"we use a queue").
+
+## Common commands
+
+A table: command → what it does. Focus on the ones a new contributor
+would not guess from the repo name. Include the "run one test" pattern.
+
+## Key conventions
+
+- API versioning policy
+- Auth model (JWT duration, refresh strategy, storage)
+- RBAC enforcement pattern (which middleware, which scope filter)
+- File-upload paths in dev vs. prod
+- Real-time event namespaces
+
+## Schema highlights
+
+Not the full schema — the parts that surprise people. Junction tables with
+non-obvious behaviour. Soft-delete patterns. Generated IDs. Enum shapes.
+
+## Known gotchas
+
+- Short bullets, one per gotcha.
+- Include the failure mode, not just the rule.
+- Delete bullets when the issue is resolved.
+```
+
+The "known gotchas" section earns its place over and over. If Claude hits a prod migration issue because `db:push` doesn't generate migration files, and you document that fact, the next session — or the next engineer — will not hit the same wall. The documentation is a living record of hard-won knowledge.
+
+## Memory files for durable facts across sessions
+
+`CLAUDE.md` captures structural knowledge. Memory files capture decisions — the answers to "why did we do it this way" that would otherwise be re-litigated in every session.
+
+Claude Code's auto-memory system (`~/.claude/memory/` by default) lets Claude read and write structured facts that persist across sessions. But the most powerful use of memory is deliberate, not automatic: after a significant architectural decision, write a short file recording what was decided and why.
+
+A good memory file has three elements:
+
+1. **The decision.** "We chose X over Y."
+2. **The constraint that drove it.** "Because Z prevents us from doing Y in production."
+3. **The operational consequence.** "So whenever you see pattern P, do Q instead."
+
+Examples of decisions worth encoding this way:
+
+- "Auto-CD does not run `prisma migrate`. A schema column added in code but missing from prod will pass smoke tests and 500 in production on first query. Add a migration file or a hotfix SQL under `infra/hotfix/` before the deploy lands."
+- "CD runs in the `asia-south1` regional pool. The global `gcloud builds list` command shows nothing. Never conclude CD did not fire from a global list; re-check in the right region."
+
+These are not edge cases — they are the class of knowledge that, undocumented, causes every new session (human or AI) to hit the same failure mode and spend an hour diagnosing it from scratch.
+
+<Callout type="warning" title="Keep memory files accurate or remove them">
+A memory file that describes a system that no longer exists is worse than no documentation. When you change the deployment topology, rotate a secret, or remove a feature, update the corresponding memory file in the same change. Stale facts injected into context cause confident wrong answers.
+</Callout>
+
+## Structuring domain knowledge for Claude to use
+
+Technical documentation is the easier half. Domain knowledge — the business rules, the entity relationships, the lifecycle states that only exist in the product spec and in the heads of the team — is harder to write in a form Claude can use.
+
+Two principles help.
+
+**Make states and transitions explicit, not implicit.** If your lead record has a 22-stage funnel, write out the stages and the automatic progression rules. "At four or more inbound messages on a `LEAD_RECEIVED` lead, the system promotes it to `LEAD_ENGAGED` automatically. Any code that mutates `stage` must also write a `LeadStageHistory` row." Without this, Claude will implement stage mutations and silently omit the history row, because that invariant is invisible from the schema alone.
+
+**Write the negative cases.** Not just "here is what the system does" but "here is what it must never do." "Do not bypass `assignByRoundRobin` with a direct `prisma.lead.update({ownerId})`; that skips the `LeadAssignment` row and the activity audit entry." Claude is very good at following explicit rules and very likely to take the straightforward path when rules are absent.
+
+<Mermaid chart={`flowchart TD
+    A[New domain concept] --> B{Will Claude see it\nin the code?}
+    B -- Yes, obvious --> C[Leave it in code comments]
+    B -- No, or subtle --> D{Is it a rule or a decision?}
+    D -- Rule / invariant --> E[Add to CLAUDE.md\nunder conventions or gotchas]
+    D -- Decision / why --> F[Write a memory file\nwith decision + constraint + consequence]
+    E --> G[Delete when rule changes]
+    F --> H[Update when decision changes]
+`} />
+
+## The skills pattern: lazy-load procedural knowledge
+
+One practical problem with `CLAUDE.md` is that it loads into every session, whether or not that session needs it. A 400-line file is fine. A 4,000-line file starts to consume meaningful context and slow down every response.
+
+The answer for procedural knowledge — step-by-step workflows, runbooks, deployment sequences — is skills. A skill is a Markdown file in `.claude/skills/<name>/SKILL.md` that only loads when you invoke it by name. It carries no context cost when you are not using it.
+
+The split is straightforward:
+
+- **`CLAUDE.md`**: architecture, invariants, conventions, gotchas — things Claude needs on every task.
+- **Skills**: procedures, playbooks, and workflows — things Claude needs for specific, named tasks.
+
+A deploy runbook as a skill might look like:
+
+```markdown
+---
+description: Full production deploy pipeline for this project
+allowed-tools: Bash, Read
+---
+
+Follow these steps in order:
+
+1. Confirm the smoke test is green: `gh run list --branch dev --limit 1`
+2. Merge the PR to dev, then promote dev to the gcp branch.
+3. Monitor the Cloud Build trigger in the asia-south1 regional pool.
+   Do NOT use `gcloud builds triggers run` — the push already fired CD.
+4. Verify the running image: `kubectl -n luxora get deploy -o jsonpath=...`
+```
+
+This is documentation that Claude can execute, not just read.
+
+## Maintaining documentation as the codebase evolves
+
+The single most common failure mode for `CLAUDE.md` is staleness. When the system changes and the documentation does not, Claude gets confidently wrong answers backed by outdated facts.
+
+Two practices prevent this:
+
+**Update in the same change.** When you write a PR that adds a route, changes a schema, introduces a new pattern, or removes a sharp edge — update `CLAUDE.md` in the same commit. Treat it as a required part of every significant change, not an optional follow-up.
+
+**The sharp-edge list as a changelog.** The "known gotchas" section of `CLAUDE.md` is a list that should shrink over time. When a gotcha is resolved, delete the bullet. When a new one is discovered (ideally before it causes a production incident), add it. The list's current length is a rough proxy for accumulated technical debt.
+
+<Callout type="note" title="Stale architecture docs are worse than no docs">
+A doc that says "service X reads from the Y table" when service X was decommissioned six months ago actively misleads Claude. Claude will reason from it confidently. If you cannot maintain a section, delete it rather than leaving it to rot.
+</Callout>
+
+## Recap
+
+Documentation is the most leveraged investment you can make in your Claude Code workflow. A well-maintained `CLAUDE.md` transforms every session: you delegate goals instead of instructions, and Claude can act on deep context it would otherwise have to reconstruct from scratch on every task.
+
+The three-layer model:
+
+1. **`CLAUDE.md`** — architecture, invariants, conventions, known gotchas. Loaded every session. Keep it accurate and lean.
+2. **Memory files** — decisions: what was chosen, why, and what it means for future work. Written after significant decisions; updated when they change.
+3. **Skills** — procedures and workflows. Loaded on demand only. Write them when you find yourself giving the same multi-step briefing more than twice.
+
+**Next up:** the chapter on hooks shows you how to run your own code around Claude's tool calls — enforcing invariants, logging decisions, and building quality gates directly into the session lifecycle.

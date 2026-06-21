@@ -1,0 +1,284 @@
+# MCP — using servers & building your own
+
+MCP (Model Context Protocol) is the open standard that lets Claude reach beyond its built-in tools and talk to any external system — databases, APIs, design tools, CI platforms — through a common interface. By the end of this chapter you will know how to connect an existing MCP server to Claude Code, how to build a minimal server of your own, and how to think about what belongs in a server versus what belongs in a hook or skill.
+
+---
+
+## What MCP is and why it exists
+
+Claude's built-in tools (`Read`, `Bash`, `WebFetch`, and so on) are a closed set. If you want Claude to query your Postgres database, pull a Jira ticket, or post a Slack message, there is no built-in tool for that. MCP is the answer.
+
+An MCP server is a small process — local or remote — that exposes **tools**, **resources**, and **prompts** over a standardized JSON-RPC protocol. Claude Code discovers those tools at session start and treats them as first-class peers of its built-in tool set. From Claude's perspective, calling `mcp__supabase__execute_sql` is identical to calling `Bash`.
+
+MCP was donated to the Linux Foundation's Agentic AI Foundation in December 2025 and has since been adopted by ChatGPT, Cursor, Gemini, and Microsoft Copilot — making it the closest thing the industry has to a neutral integration layer for AI agents. (Source: packet-B, §2.1)
+
+<Callout type="note" title="Deferred tool loading keeps context lean">
+Claude Code does not load every MCP tool's schema at session start. Instead it uses the `ToolSearch` tool to fetch schemas on demand. This keeps the context window from filling with hundreds of rarely-used tool definitions. On Vertex AI or non-first-party base URLs, deferred loading is disabled and all schemas load upfront. (Source: packet-A, §14)
+</Callout>
+
+---
+
+## The MCP ecosystem today
+
+The number of available MCP servers has grown rapidly since the protocol launched. Multiple registries track the public supply:
+
+<EcosystemExplorer />
+
+The widget above lets you filter by type and use case. Toggle "New / featured only" to see what has shipped recently. The official MCP reference servers (maintained by Anthropic at `modelcontextprotocol/servers`) number seven: fetch, filesystem, git, memory, time, sequential-thinking, and everything (a test harness). Many vendor-maintained servers — GitHub, Supabase, Linear, Figma, Stripe, Cloudflare — now ship as first-party integrations. (Source: packet-B, §2.3–2.4)
+
+---
+
+## Connecting an MCP server in Claude Code
+
+There are two ways to wire a server into Claude Code: a project-level `.mcp.json` file (checked in, shared with your team) or an entry in `settings.json` (user or managed scope). For most team scenarios, `.mcp.json` is the right choice.
+
+### Using `.mcp.json`
+
+Create `.mcp.json` at your project root:
+
+```json
+{
+  "mcpServers": {
+    "supabase": {
+      "command": "npx",
+      "args": ["-y", "@supabase/mcp-server-supabase@latest", "--access-token", "${SUPABASE_ACCESS_TOKEN}"],
+      "env": {
+        "SUPABASE_ACCESS_TOKEN": "${SUPABASE_ACCESS_TOKEN}"
+      }
+    },
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"]
+    }
+  }
+}
+```
+
+When Claude Code opens in this directory it will offer to connect these servers. Approve once; future sessions auto-connect without prompting if `enableAllProjectMcpServers: true` is set in your `settings.json`. (Source: packet-A, §14)
+
+Environment variable references like `${SUPABASE_ACCESS_TOKEN}` are expanded from the session environment — put secrets in your shell profile or CI secrets, never in the JSON file itself.
+
+### Using an official plugin
+
+Many of the most popular MCP servers ship as Claude Code plugins, which bundle the server configuration alongside skills and hooks. Installing from the official marketplace is a single command:
+
+```
+/plugin install supabase@claude-plugins-official
+/plugin install github@claude-plugins-official
+/plugin install linear@claude-plugins-official
+```
+
+Plugins handle the `.mcp.json` wiring automatically and add a scoped namespace (e.g. `mcp__supabase__execute_sql`) that you can reference in permission rules. (Source: packet-B, §1.3)
+
+### Approving MCP tools via permission rules
+
+MCP tools surface in permission rules and hook matchers as `mcp__<server>__<action>`. To auto-approve all tools from a specific server without approving every individual tool:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "mcp__memory__.*",
+      "mcp__supabase__execute_sql",
+      "mcp__github__.*"
+    ]
+  }
+}
+```
+
+The pattern `mcp__memory__.*` (contains `.` and `*`) is treated as a JavaScript regex and matches every tool from the memory server. The pattern `mcp__supabase__execute_sql` (letters and underscores only) is an exact string match. (Source: packet-A, §5 — hook matcher pattern rules apply identically in permission rules)
+
+---
+
+## Verifying a connected server
+
+Run `/mcp` to list all connected MCP servers, their status, and their exposed tools. A healthy output looks like:
+
+```
+● supabase  (5 tools)
+  execute_sql   run_migrations   list_tables   get_schema   list_projects
+
+● memory    (9 tools)
+  create_entities   add_observations   search_nodes   …
+```
+
+If a server shows as disconnected, check:
+1. The binary/package specified in `command` is installed and on `PATH`.
+2. Environment variables referenced in `env` are set in the current shell.
+3. The server process did not crash — run the command manually in a terminal to see its startup output.
+
+---
+
+## Building a minimal MCP server
+
+Building a server is more approachable than it looks. The official TypeScript SDK (`@modelcontextprotocol/sdk`) handles the protocol layer; you write the tools. A working server is under 60 lines. (Source: packet-B, §6.1 — `modelcontextprotocol/typescript-sdk`)
+
+### A worked example: a project-status server
+
+Imagine you want Claude to check the status of your deploys from within a session — without exposing full shell access. A purpose-built MCP server with a single tool is cleaner than a broad `Bash` permission.
+
+```typescript
+// server.ts
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
+import { execSync } from "node:child_process";
+
+const server = new McpServer({
+  name: "project-status",
+  version: "0.1.0",
+});
+
+// Tool: get current deploy SHA from the cluster
+server.tool(
+  "get_deploy_sha",
+  "Returns the currently running image SHA for a given service.",
+  {
+    service: z.enum(["backend", "frontend"]).describe("Which service to check"),
+  },
+  async ({ service }) => {
+    try {
+      const sha = execSync(
+        `kubectl -n prod get deploy/${service} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null`
+      )
+        .toString()
+        .trim()
+        .split(":")[1] ?? "unknown";
+
+      return {
+        content: [{ type: "text", text: `${service} is running ${sha}` }],
+      };
+    } catch {
+      return {
+        content: [{ type: "text", text: `Could not reach cluster` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// Tool: list recent CI runs
+server.tool(
+  "list_ci_runs",
+  "Returns the last N CI run statuses for a branch.",
+  {
+    branch: z.string().describe("Branch name"),
+    limit: z.number().int().min(1).max(20).default(5),
+  },
+  async ({ branch, limit }) => {
+    const raw = execSync(
+      `gh run list --branch ${branch} --limit ${limit} --json status,conclusion,headSha,createdAt`
+    ).toString();
+    return { content: [{ type: "text", text: raw }] };
+  }
+);
+
+const transport = new StdioServerTransport();
+await server.connect(transport);
+```
+
+Wire it into your project's `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "project-status": {
+      "command": "npx",
+      "args": ["tsx", "./tools/server.ts"]
+    }
+  }
+}
+```
+
+Now Claude can call `mcp__project-status__get_deploy_sha` or `mcp__project-status__list_ci_runs` without needing shell access to `kubectl` or `gh` from a permissive `Bash` rule.
+
+### What a tool definition must provide
+
+Every tool needs three things:
+
+| Field | Purpose |
+|---|---|
+| Name | Identifier used in tool calls (`snake_case`, no spaces) |
+| Description | What Claude reads to decide when to call this tool — be specific |
+| Input schema | Zod schema (TypeScript) or JSON Schema — all inputs validated before your handler runs |
+
+The description is the most important field for usability. Claude decides whether to call a tool based on it. "Returns the currently running image SHA for a given service" is concrete and unambiguous. "Gets deploy info" is not.
+
+### Transport choices
+
+MCP supports two transport mechanisms:
+
+**Stdio** (as above) — the server process starts as a child of Claude Code, communicating over stdin/stdout. Simplest for local tools; zero networking, zero auth.
+
+**HTTP with SSE** — the server runs as a persistent process (or remote service) and Claude connects over HTTP. Required for shared or remote servers; supports OAuth 2.0 for authentication. This is how hosted integrations like Supabase and Linear operate.
+
+For local tooling, stdio is almost always the right starting point.
+
+---
+
+## Exposing resources and prompts
+
+Tools are the most common MCP primitive, but the protocol also supports **resources** and **prompts**.
+
+**Resources** are read-only data sources with stable URIs — think of them as files or API endpoints that Claude can browse and read without invoking a tool. The `ListMcpResourcesTool` and `ReadMcpResourceTool` built-in tools handle resource access on Claude's end. Resources are useful for exposing documentation, configuration files, or reference data that does not need a round-trip interaction.
+
+**Prompts** are server-defined prompt templates that users can invoke as slash commands. They appear in Claude Code as `/mcp__<server>__<prompt-name>`. Prompts are the right choice for canned workflows — "generate a migration plan", "summarize the last week of issues" — where the server can inject live data into a structured prompt before Claude sees it.
+
+---
+
+## MCP transport flow
+
+<Mermaid chart={`sequenceDiagram
+    participant CC as Claude Code
+    participant MCP as MCP Server (stdio)
+    participant Ext as External System
+
+    CC->>MCP: initialize (list tools/resources/prompts)
+    MCP-->>CC: tool definitions + capabilities
+
+    Note over CC: Session starts; tool schemas deferred until needed
+
+    CC->>CC: ToolSearch — load mcp__myserver__ schemas
+    CC->>MCP: tools/call {name, arguments}
+    MCP->>Ext: query / API call / file read
+    Ext-->>MCP: raw result
+    MCP-->>CC: content [{type:"text", text:"..."}]
+    CC->>CC: tool result injected into message array
+`} />
+
+---
+
+## When to build an MCP server vs using Bash
+
+MCP servers add process-management overhead and require maintenance. They are the right tool when:
+
+- You want to **expose a well-typed interface** rather than raw shell access — `get_deploy_sha(service)` is safer than `Bash(kubectl get deploy ...)`.
+- The logic needs to be **shared across projects or teammates** — a checked-in `.mcp.json` means everyone on the team gets the same tools without configuring anything.
+- You are exposing a **remote or shared service** — HTTP+SSE transport lets a single server instance serve multiple Claude sessions.
+- The integration requires **authentication that should not be typed into prompts** — the server handles auth internally; Claude never sees credentials.
+
+Stick with `Bash` when the operation is one-off, project-specific, and the shell command is already constrained by your permission rules. A `Bash(kubectl get deploy *)` allow rule is often sufficient for solo use.
+
+<Callout type="tip" title="Start with a plugin before building from scratch">
+Before writing a server, check whether an official plugin already covers your integration. `/plugin install github@claude-plugins-official` gives you a complete, maintained GitHub MCP server in seconds. Build your own only when the integration does not exist or needs custom logic that a generic server cannot provide. (Source: packet-B, §1.3)
+</Callout>
+
+---
+
+## Enterprise authorization
+
+For team deployments, MCP servers that require OAuth (Supabase, Linear, Atlassian, Figma, and others) previously meant every developer had to complete an OAuth consent flow individually. Enterprise-Managed Authorization (EMA), which reached stable status in June 2026, replaces this with zero-touch IdP-delegated auth. Admins configure the connection once via their identity provider (Okta is the first supported IdP); team members get access automatically when Claude Code is launched. (Source: packet-B, §2.5)
+
+EMA applies to Team and Enterprise plans. Configuration in Claude also applies to Claude Code automatically.
+
+---
+
+## Recap
+
+- MCP is the open protocol that lets Claude call external systems through typed tools, resources, and prompts. It is platform-neutral and now governed by the Linux Foundation.
+- Connect servers via `.mcp.json` (project-shared) or `settings.json` (user/managed). Official plugins bundle the wiring for the most popular integrations.
+- MCP tools appear in permission rules and hook matchers as `mcp__<server>__<action>`. Regex patterns let you approve an entire server in one rule.
+- Building a server requires only the official SDK and a tool definition — name, description, Zod schema, and handler. Stdio transport is the simplest starting point.
+- Choose MCP over `Bash` when you need typed safety, team sharing, remote deployment, or credential isolation. For quick local operations, a scoped `Bash` allow rule is often enough.
+
+**Next:** Chapter "Hooks deep dive" examines the full 30-event lifecycle — `PreToolUse`, `PostToolUse`, `SessionStart`, `Stop`, and the less obvious events — with concrete patterns for automated quality gates, session-start context injection, and policy enforcement that runs without human review.

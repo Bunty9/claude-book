@@ -1,0 +1,275 @@
+# Headless / CLI automation
+
+Most Claude Code chapters assume you are sitting at a terminal, watching the agent think. This one does not. You will learn how to drive Claude Code non-interactively — from shell scripts, CI pipelines, and programmatic wrappers — so that the same agent loop that works in your editor can also run unattended in a GitHub Actions job, a nightly cron task, or a custom build tool.
+
+## Why headless matters
+
+The interactive Claude Code experience is powerful, but it is also synchronous: you wait, it thinks, you approve, it acts. Headless mode breaks that dependency. When Claude runs without a terminal, it can:
+
+- Generate and apply code changes as part of a CI pipeline that no human needs to babysit
+- Run automated review, linting, or migration passes on every pull request
+- Be invoked from shell scripts as a composable step — the way you would call `grep` or `jq`
+- Drive a custom application through the Agent SDK, where your code controls the loop entirely
+
+The two main paths are the **`-p` flag** on the CLI (for quick scripting) and the **Agent SDK** (for deeper integration). Both expose the same agent loop; they just differ in how you talk to it.
+
+## The `-p` flag: one-shot non-interactive mode
+
+Passing `-p` (or `--print`) to `claude` puts it into print mode — it takes a prompt, runs the agent loop, prints the final output to stdout, and exits. No TTY required.
+
+```bash
+# Ask a question, get an answer on stdout
+claude -p "What does the function in src/auth.ts do?"
+
+# Ask Claude to write a file and then exit
+claude -p "Add a health-check route at GET /api/health that returns {ok:true}"
+
+# Pipe output into another tool
+claude -p "List every TODO comment in src/ as JSON" | jq '.[]'
+```
+
+The flag works in any script context where you would normally call a subprocess. Exit code `0` means success; non-zero means the agent loop errored.
+
+### Controlling what is allowed
+
+In non-interactive mode, Claude cannot ask you for permission mid-run. You have two options:
+
+**`--allowedTools`** — accept a comma-separated list of tool specs using the same permission syntax as `settings.json`:
+
+```bash
+claude -p "Fix the type error in src/user.ts" \
+  --allowedTools "Edit,Read,Bash(pnpm typecheck)"
+```
+
+**`--dangerously-skip-permissions`** — bypass all permission checks. This activates `bypassPermissions` mode, which is distinct from `dontAsk`: `dontAsk` still enforces your allow-list and denies everything else, while `bypassPermissions` skips every check entirely. The CLI refuses to run this as root on Unix, which is the right default. Use it only inside isolated containers or disposable VMs — never on a workstation or a shared runner with real credentials.
+
+```bash
+# Inside a Docker container with a throwaway workspace
+claude -p "Apply all TODO migrations in prisma/migrations/" \
+  --dangerously-skip-permissions
+```
+
+<Callout type="warning" title="bypassPermissions skips every check — including destructive ones">
+With `--dangerously-skip-permissions`, Claude will delete files, overwrite configs, and run arbitrary shell commands without asking. Scope it tightly: run in a container that mounts only the files it should touch, and revoke credentials it does not need.
+</Callout>
+
+### Capping cost and turns
+
+Headless jobs can run indefinitely if you give them an open-ended prompt. Two guardrails help:
+
+- **`--max-turns N`** — stop after N tool-use round trips. Without this, a confused agent can loop until it hits an API error or drains a budget.
+- **`ANTHROPIC_MODEL`** — override the model for one invocation from the environment, useful for using a cheaper model on routine tasks.
+
+```bash
+MAX_TURNS=10 claude -p "Summarize every file changed in the last commit" \
+  --max-turns 10
+```
+
+When `maxTurns` fires, the SDK emits a `ResultMessage` with subtype `error_max_turns` and the CLI exits with a non-zero code — which your script can detect.
+
+### Reading from stdin
+
+You can pipe content into `-p` by combining it with shell here-strings or process substitution:
+
+```bash
+# Pass a diff as part of the prompt
+git diff HEAD~1 | claude -p "Review this diff for security issues. Output findings as JSON."
+```
+
+Claude Code reads stdin when it is not a TTY and combines it with the `-p` prompt. This lets you build pipelines that feed dynamic context without constructing large command-line strings.
+
+## Permission modes in scripts
+
+The permission mode you choose determines whether the job can be interrupted by a prompt. For CI you almost always want `dontAsk`:
+
+| Mode | What happens on an unpermitted tool | When to use |
+|---|---|---|
+| `default` | Blocks, waiting for terminal input — hangs in CI | Interactive only |
+| `acceptEdits` | Auto-approves file edits; other Bash may block | Developer machines |
+| `dontAsk` | Denies anything not in the allow list; never prompts | CI / scripts |
+| `bypassPermissions` | Allows everything; no prompts | Isolated containers |
+
+Set mode via `--allowedTools` plus the `dontAsk` behaviour, or use `--dangerously-skip-permissions` for the bypass. There is no explicit `--mode dontAsk` flag on the CLI — you achieve it by pre-authorising every tool the job needs through `--allowedTools` or `settings.json` rules.
+
+A practical pattern for CI is to commit a `.claude/settings.json` in the repo that lists the allow rules, then call:
+
+```bash
+claude -p "$PROMPT" --allowedTools "Read,Glob,Grep,Edit,Write,Bash(pnpm *)"
+```
+
+The project settings load automatically, providing the CLAUDE.md context, and the `--allowedTools` flag adds the per-invocation gate.
+
+## Using the Agent SDK
+
+For anything more complex than a single prompt — multi-turn sessions, structured output, custom tool handling, programmatic result parsing — the Agent SDK is the right tool. It embeds the full agent loop in your application without requiring the CLI to be installed.
+
+The TypeScript package is `@anthropic-ai/claude-agent-sdk`; Python is `claude-agent-sdk`. Both expose a `query()` function that is an async iterator (TypeScript) or async generator (Python) over the message stream.
+
+```typescript
+import { query, ResultMessage } from '@anthropic-ai/claude-agent-sdk'
+
+async function reviewDiff(diff: string): Promise<string> {
+  let finalText = ''
+
+  for await (const message of query({
+    prompt: `Review this diff for correctness bugs:\n\n${diff}`,
+    permissionMode: 'bypassPermissions',
+    maxTurns: 5,
+    allowedTools: ['Read', 'Grep'],
+  })) {
+    if (message.type === 'result') {
+      const result = message as ResultMessage
+      if (result.subtype === 'success') {
+        finalText = result.result ?? ''
+      }
+    }
+  }
+
+  return finalText
+}
+```
+
+The `ResultMessage` carries the final text, token usage, cost in USD, and session ID. The `subtype` field tells you how the loop ended: `success`, `error_max_turns`, `error_max_budget_usd`, or `error_during_execution`. Handle non-success subtypes explicitly — a script that silently swallows `error_max_turns` will look like it succeeded when it ran out of budget halfway through.
+
+<Callout type="tip" title="Load project context with settingSources">
+By default the SDK runs with no project context. Pass `settingSources: ['project']` to load `.claude/settings.json`, CLAUDE.md files, and skills from the current directory — the same context as an interactive session.
+</Callout>
+
+```typescript
+for await (const message of query({
+  prompt: 'Check for broken imports in src/',
+  settingSources: ['project'],  // loads CLAUDE.md + .claude/settings.json
+  permissionMode: 'bypassPermissions',
+})) { /* ... */ }
+```
+
+### Message types in the loop
+
+The loop emits five message types. For scripting purposes, you usually only care about two:
+
+<Mermaid chart={`sequenceDiagram
+    participant S as Script
+    participant L as Agent Loop
+    participant T as Tools
+
+    S->>L: query(prompt, options)
+    loop Until no tool calls
+        L-->>S: AssistantMessage (Claude's response)
+        L->>T: Tool call (Read / Bash / Edit ...)
+        T-->>L: Tool result
+        L-->>S: UserMessage (tool result echoed)
+    end
+    L-->>S: AssistantMessage (final text-only response)
+    L-->>S: ResultMessage (success | error_*)
+`} />
+
+`AssistantMessage` fires after each Claude response, including the final one. `ResultMessage` marks the end of the loop. All other types (`SystemMessage`, `UserMessage`, `StreamEvent`) are useful for debugging or building richer UIs but can be ignored in most scripts.
+
+## CI pipeline integration
+
+The most common headless pattern is a GitHub Actions step that runs Claude on pull request events. The shape is straightforward:
+
+```yaml
+# .github/workflows/claude-review.yml
+name: Claude review
+on: [pull_request]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # need full history for diff
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Run review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          DIFF=$(git diff origin/${{ github.base_ref }}...HEAD)
+          echo "$DIFF" | claude -p \
+            "Review this diff. Output a markdown summary of any correctness bugs found." \
+            --allowedTools "Read,Grep,Glob" \
+            --max-turns 8
+```
+
+A few things to note:
+
+- `fetch-depth: 0` gives Claude the full git history so `git diff` and `git log` work correctly inside the session.
+- `--allowedTools` is explicit. In CI, every tool the agent needs must be pre-authorised or the job will either hang (waiting for a prompt that never comes) or fail with a denied-tool error.
+- The model inherits from `ANTHROPIC_MODEL` or the project `settings.json`. Override per-job from the environment if you want to use a lighter model for routine checks.
+
+### Lockfile and dependency hygiene
+
+One sharp edge specific to CI: if your project uses `pnpm` locally but CI runs `npm ci`, the lockfiles can drift. Claude Code itself is installed via `npm` in the example above. If your workflow also calls `pnpm` inside Bash tool calls, make sure both lockfiles are committed. An `npm ci` that cannot find a package will fail before the agent loop even starts — not Claude's fault, but easy to miss in a headless context where there is no human to read the error.
+
+## Environment variables worth knowing
+
+Several env vars change headless behaviour in important ways:
+
+| Variable | What it does |
+|---|---|
+| `ANTHROPIC_API_KEY` | Required — authentication |
+| `ANTHROPIC_MODEL` | Override the model for this invocation |
+| `BASH_DEFAULT_TIMEOUT_MS` | Change the 2-minute default Bash timeout |
+| `BASH_MAX_TIMEOUT_MS` | Change the 10-minute maximum Bash timeout |
+| `BASH_MAX_OUTPUT_LENGTH` | Raise the 30,000-char output cap (hard ceiling 150,000) |
+| `DISABLE_AUTO_COMPACT` | Prevent automatic context compaction |
+| `CLAUDE_CODE_EFFORT_LEVEL` | Set reasoning depth (`low`, `medium`, `high`, `xhigh`) |
+| `NO_COLOR` | Strip ANSI codes from output — cleaner logs in CI |
+| `CLAUDE_CODE_SKIP_PROMPT_HISTORY` | Disable transcript writes to disk |
+
+For jobs that process large files, raising `BASH_MAX_OUTPUT_LENGTH` prevents silent truncation of tool results. For cost-sensitive nightly jobs, `CLAUDE_CODE_EFFORT_LEVEL=low` cuts reasoning depth without changing the model.
+
+## Using the `--output-format` flag
+
+The CLI can emit structured JSON instead of prose, which makes parsing results in a larger pipeline much easier:
+
+```bash
+claude -p "List all exported functions in src/ as JSON" \
+  --output-format json \
+  --allowedTools "Read,Glob"
+```
+
+The JSON envelope wraps the result text, token counts, and cost. Parse it with `jq` or any JSON library downstream. This is the correct way to build Claude Code into a script that produces machine-readable output — scraping prose with regexes is fragile.
+
+## Session continuity and the `--resume` flag
+
+By default each `-p` invocation is stateless — a fresh context. For multi-step scripting where you want to carry state across invocations, the SDK's `sessionId` supports continuation. On the CLI, `--resume <session-id>` restarts a previous session.
+
+This is useful for scripts that need to inspect intermediate state before proceeding:
+
+```bash
+# Step 1 — analyse and save session id
+SESSION=$(claude -p "Analyse the failing tests and propose a fix plan" \
+  --output-format json | jq -r '.session_id')
+
+# Human review happens here (or an approval gate in CI)
+
+# Step 2 — resume and apply
+claude -p "Apply the fix plan we discussed" --resume "$SESSION" \
+  --allowedTools "Edit,Bash(pnpm test)"
+```
+
+The session context — including all prior tool outputs — is carried forward. You are not re-paying the cost of re-reading files because the prior context is prompt-cached on Anthropic's servers after the first request.
+
+## Debugging headless runs
+
+When a headless job silently produces wrong output, the usual culprits are:
+
+1. **A tool that needed permission was silently denied** — check that `--allowedTools` covers every tool the prompt requires. Add `Bash(*)` temporarily to confirm this is the issue, then tighten.
+2. **Context truncation** — if the job touches many large files, the context window fills and auto-compaction kicks in. A `compact_boundary` `SystemMessage` is emitted; in the SDK you can detect this and decide whether to abort.
+3. **Bash output truncated at 30,000 chars** — raise `BASH_MAX_OUTPUT_LENGTH` or pipe through `head`/`tail` to keep outputs within the cap.
+4. **The agent hit `maxTurns`** — check `ResultMessage.subtype`. If it is `error_max_turns`, the job did not finish; raise the cap or break the prompt into smaller scoped tasks.
+5. **Wrong working directory** — tools resolve paths relative to `cwd`. If you call `claude` from a directory that does not contain the files the prompt references, most tool calls will fail with "file not found" rather than permission errors.
+
+<Callout type="note" title="NO_COLOR cleans up log output">
+By default Claude Code emits ANSI colour codes. In CI logs these appear as escape-sequence noise. Set `NO_COLOR=1` to strip them. The flag is respected by subprocesses too, so nested tool calls inherit it automatically.
+</Callout>
+
+## Recap
+
+Running Claude Code headlessly comes down to three choices: the **`-p` flag** for shell scripting, the **Agent SDK** for programmatic integration, and **`--allowedTools`** plus permission mode to control what the agent can touch. In CI, commit allow rules to `.claude/settings.json` so they version-control alongside the code, set `NO_COLOR=1` to keep logs readable, cap turns with `--max-turns`, and always check `ResultMessage.subtype` to distinguish a finished job from one that ran out of budget.
+
+The next chapter covers **hooks** — lifecycle callbacks that let you react to Claude's actions at the infrastructure level, which pair naturally with headless runs to enforce invariants without consuming context-window space.

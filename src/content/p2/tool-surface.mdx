@@ -1,0 +1,137 @@
+# The tool surface
+
+Claude Code ships with a catalogue of built-in tools that give the agent loop its hands. By the end of this chapter you will know what each major tool does, why the groupings matter, and — most importantly — which tool to reach for in a given situation. Use the interactive map below as a living reference as you read.
+
+## Tools are the only way Claude acts
+
+When Claude is working as an agent it cannot produce side-effects by thinking harder. Every concrete action — reading a file, running a test, fetching a page — happens through a named tool call. The agent loop feeds the result of that call back into the context, and Claude continues reasoning with it.
+
+This architecture has a practical consequence: **if you understand the tool surface, you understand exactly what Claude can and cannot do**. There is no hidden action channel. The full catalogue, organised by surface area, is filterable in the widget below.
+
+<ToolSurfaceMap/>
+
+<Callout type="note" title="Permission badges matter">
+The "perm" badge (amber) means the tool shows an approval prompt before running the first time in a session, unless you have an allow rule for it. The "silent" badge means no prompt — the tool only observes and cannot change anything. This maps directly to the permission system covered in the previous chapter.
+</Callout>
+
+## Reading and finding files
+
+The three file-discovery tools form a natural hierarchy.
+
+**`Read`** loads a file's contents into the context with line numbers. It handles plain text, source code, images, PDFs, and Jupyter notebooks. It requires no permission prompt because it only observes. The catch: every byte read costs context tokens, so reading a 10,000-line file when you need three lines is wasteful. Claude will prefer targeted reads when it can.
+
+**`Glob`** finds files by path pattern, returning results sorted by modification time, capped at 100 entries. It does not respect `.gitignore` by default. Use it when you need a list of files matching a shape — `src/**/*.ts`, `**/*.test.*` — before deciding which ones to read.
+
+**`Grep`** searches file contents using ripgrep, and unlike `Glob` it does respect `.gitignore`. Three modes: `files_with_matches` (default, just filenames), `content` (matching lines with context), `count` (occurrences per file). If you know what text you are looking for, `Grep` is almost always faster than reading many files.
+
+The typical search flow is:
+
+<Mermaid chart={`sequenceDiagram
+    participant Claude
+    participant Glob
+    participant Grep
+    participant Read
+
+    Claude->>Glob: find candidate files (*.ts)
+    Glob-->>Claude: [auth.ts, token.ts, session.ts]
+    Claude->>Grep: search for "refreshToken"
+    Grep-->>Claude: auth.ts:42, token.ts:17
+    Claude->>Read: read auth.ts (lines 35-55)
+    Read-->>Claude: exact code with line numbers
+`} />
+
+**`LSP`** is a step further: code intelligence powered by a language server. It understands types, not just text — jump to definition, find all references, list type errors, walk call hierarchies. After every file edit, `LSP` automatically reports any new type errors so Claude can fix them without a separate build step. It requires a code intelligence plugin installed alongside Claude Code.
+
+## Writing and editing files
+
+Three tools, three use cases.
+
+**`Write`** creates a file or completely overwrites an existing one. Because overwriting is destructive, it requires a prior `Read` in the same session — Claude must have seen the current contents before it can replace them. Use this when creating new files or doing a full rewrite.
+
+**`Edit`** does exact string replacement within a file. The `old_string` must appear exactly once (use `replace_all: true` for repeated occurrences). It is more precise and less risky than `Write` for targeted changes because Claude can only touch the strings it explicitly names. Most code edits happen via `Edit` rather than `Write`.
+
+**`NotebookEdit`** modifies Jupyter notebook cells by cell ID — replace, insert, or delete — without touching the notebook format boilerplate. This is the right tool for `.ipynb` files; using `Edit` on raw notebook JSON is fragile.
+
+<Callout type="tip" title="Read-only tools can run in parallel; write tools cannot">
+Claude Code runs `Read`, `Glob`, `Grep`, and `LSP` concurrently within a single turn when it needs results from multiple files. `Edit`, `Write`, and `Bash` run sequentially to avoid race conditions. This is automatic — no configuration needed. Structuring prompts to front-load information-gathering lets the parallelism do useful work.
+</Callout>
+
+## Running shell commands
+
+**`Bash`** is the general escape hatch: run any shell command, pipe results, chain commands with `&&`. A few constraints worth knowing:
+
+- Default timeout is 2 minutes per command (raise it with the `timeout` parameter, up to 10 minutes).
+- Output is capped at 30,000 characters. Commands that produce more need to pipe through `tail`, `grep`, or `head` before Claude sees the result.
+- Environment variables do not persist between separate `Bash` calls in the same session. Working directory changes (via `cd`) do persist, provided the target is within the project directory or a directory you have explicitly added to the session.
+- Shell aliases from your `~/.zshrc` or `~/.bashrc` are available — Claude Code sources your profile at session start.
+
+Because `Bash` can do almost anything, it requires a permission prompt by default. The pattern for automating this safely is to add specific command patterns to `permissions.allow` in your project's `settings.json`:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run *)",
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(pnpm typecheck)"
+    ]
+  }
+}
+```
+
+**`Monitor`** is `Bash` for streaming output. It runs a command in the background and feeds each output line back to Claude in real time — useful for tailing logs, watching a test runner, or reacting to a CI webhook. Claude can take action on each line as it arrives rather than waiting for the command to finish.
+
+## Searching the web
+
+Two tools, two distinct jobs — and they are not interchangeable.
+
+**`WebSearch`** queries a search backend and returns titles and URLs. It does not return page content. It may issue up to 8 backend searches internally per call, refining results before returning them. Use it to discover sources, not to read them.
+
+**`WebFetch`** fetches a URL and runs an extraction prompt on the page before returning anything to Claude. This is intentionally lossy: rather than dumping raw HTML into the context, a small fast model extracts what is relevant and passes that summary. There is a 15-minute response cache. Cross-host redirects return redirect information rather than following automatically — Claude needs to issue a second call with the new URL.
+
+The two tools compose naturally: `WebSearch` locates the right page, then `WebFetch` reads it. Claude does this automatically when asked a question that requires live information.
+
+<Callout type="warning" title="WebFetch extracts, it does not transcribe">
+The extraction model decides what from a page reaches Claude's context. If you need a specific table, API signature, or code block from a documentation page, say so explicitly in the prompt alongside the URL. Vague extraction prompts produce vague results.
+</Callout>
+
+## Tasks and scheduling
+
+**Task tools** (`TaskCreate`, `TaskList`, `TaskGet`, `TaskUpdate`, `TaskStop`) replaced the older `TodoWrite` as of v2.1.142. They manage a structured task list within the session — Claude uses this to track multi-step plans, update progress, and signal completion. You can inspect the live task list with `/tasks` in an interactive session.
+
+**`CronCreate`**, **`CronDelete`**, and **`CronList`** schedule prompts to run on a recurring or one-shot basis within the session. A cron task that fires every 5 minutes, re-checks a CI status, and notifies you when it goes green is a typical use case.
+
+**`ScheduleWakeup`** is a narrower primitive: it tells Claude when to resume the current `/loop` iteration. The gap between `Cron` (external schedule) and `ScheduleWakeup` (self-paced loop) lets you choose whether the clock or Claude's own judgment drives the rhythm.
+
+## Agents and subagents
+
+**`Agent`** spawns a subagent — an independent Claude instance that runs its own agent loop and returns a summary to the parent. Subagents start with a fresh context (only their own system prompt, not the parent's conversation history), which is both their strength and their limitation: they are cheap on the parent's context budget but know only what you explicitly give them.
+
+The `Agent` tool does not itself require a permission prompt. The subagent's tool calls surface in the parent terminal and follow the same permission rules. A subagent running in the background (`isolation: worktree`) gets its own git worktree and cannot interfere with the parent's working directory.
+
+**`Skill`** executes a named skill — a reusable instruction set defined in a Markdown file. Skills are lazy-loaded: their body content only enters the context when the skill is invoked, unlike `CLAUDE.md` which is always present. Think of them as packaged procedures that Claude knows how to call by name.
+
+## A decision guide for common situations
+
+| I want to… | Reach for… |
+|---|---|
+| Read a specific file | `Read` |
+| Find files matching a name pattern | `Glob` |
+| Find files containing specific text | `Grep` |
+| Check types / find references | `LSP` |
+| Create a new file | `Write` |
+| Change a few lines in an existing file | `Edit` |
+| Run a test, build, or any shell command | `Bash` |
+| Watch streaming output (logs, CI) | `Monitor` |
+| Find pages about a topic | `WebSearch` then `WebFetch` |
+| Fetch a specific known URL | `WebFetch` |
+| Parallelize work across multiple files | `Agent` (subagents) |
+| Run a reusable procedure | `Skill` |
+| Schedule a recurring check | `CronCreate` |
+
+## Recap
+
+The tool surface divides into five surfaces: **filesystem** (`Read`, `Glob`, `Grep`, `LSP`, `Edit`, `Write`, `NotebookEdit`), **shell** (`Bash`, `Monitor`), **web** (`WebSearch`, `WebFetch`), **agents** (`Agent`, `Skill`), and **scheduling/tasks** (`Task*`, `Cron*`, `ScheduleWakeup`). Read-only tools are silent and can run in parallel; state-changing tools prompt by default and run sequentially. Every concrete action Claude takes flows through one of these tools — there is no other path.
+
+Next: the **agent loop** chapter goes inside the loop itself — how turns sequence, how tool results flow back, how context fills up, and when the loop ends.

@@ -5,7 +5,18 @@ import { CodeBlock } from './CodeBlock'
 import { Figure } from './Figure'
 import { Mermaid } from './Mermaid'
 import { Markmap } from './Markmap'
+import { PathPicker } from './PathPicker'
 import { Tokenizer } from './widgets/Tokenizer'
+import { HarnessExplorer } from './widgets/HarnessExplorer'
+import { ContextWindowSim } from './widgets/ContextWindowSim'
+import { AgentOrchestrationVisualizer } from './widgets/AgentOrchestrationVisualizer'
+import { PromptLab } from './widgets/PromptLab'
+import { ToolSurfaceMap } from './widgets/ToolSurfaceMap'
+import { EcosystemExplorer } from './widgets/EcosystemExplorer'
+import { WorktreeWorkflowAnimator } from './widgets/WorktreeWorkflowAnimator'
+import { TDDLoopVisualizer } from './widgets/TDDLoopVisualizer'
+import { DecisionTrees } from './widgets/DecisionTrees'
+import { Quiz } from './widgets/Quiz'
 
 /** Props we expect on the <code> child of a fenced code block. */
 type CodeProps = { className?: string; children?: string }
@@ -66,7 +77,18 @@ export const mdxComponents: MDXComponents = {
   Figure,
   Mermaid,
   Markmap,
+  PathPicker,
   Tokenizer,
+  HarnessExplorer,
+  ContextWindowSim,
+  AgentOrchestrationVisualizer,
+  PromptLab,
+  ToolSurfaceMap,
+  EcosystemExplorer,
+  WorktreeWorkflowAnimator,
+  TDDLoopVisualizer,
+  DecisionTrees,
+  Quiz,
 
   // Override <pre> to route fenced code through CodeBlock
   pre: PreOverride,

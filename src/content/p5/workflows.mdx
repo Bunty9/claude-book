@@ -1,0 +1,237 @@
+# Workflows — deterministic orchestration
+
+Dynamic workflows move orchestration logic out of Claude's context window and into executable JavaScript. This chapter shows you the three structural patterns — pipeline, parallel fan-out, and loop — so you can model any repeatable multi-step job and understand exactly what the runtime guarantees at each stage.
+
+## Why orchestration needs its own layer
+
+An agent loop is powerful but inherently linear: one message array, one thread of reasoning. When a job has ten independently solvable sub-tasks, running them one at a time means a ten-fold wait and a context window that fills with intermediate results the later steps do not need.
+
+Workflows solve this by pushing orchestration into code. A workflow script describes what work to do and in what order; Claude Code's runtime executes it in the background. Intermediate results live in JavaScript variables — not in the model's context — so the context window stays clean regardless of how many sub-tasks run.
+
+<Callout type="note" title="What 'deterministic' means here">
+The orchestration structure is deterministic — the sequence, branching conditions, and concurrency limits you write in the script are executed exactly as written, every time. The _output_ of each agent turn is still non-deterministic (it is a language model). The value of deterministic orchestration is that you can reason about flow control, retries, and sequencing without thinking about model variance.
+</Callout>
+
+## The runtime model
+
+Before looking at patterns, it helps to have a clear picture of the boundaries.
+
+<Mermaid chart={`graph TD
+    U["Your prompt / slash command"] --> W["Workflow script\n(JS, runs in background)"]
+    W -->|"spawns"| A1["Agent 1"]
+    W -->|"spawns"| A2["Agent 2"]
+    W -->|"spawns"| A3["Agent 3"]
+    A1 -->|"result string"| W
+    A2 -->|"result string"| W
+    A3 -->|"result string"| W
+    W -->|"final output"| U
+
+    style W fill:var(--color-accent),color:#fff
+`} />
+
+Key facts from the official docs:[^workflow-docs]
+
+- Up to **16 agents run concurrently** (fewer on low-CPU machines); up to **1,000 agents total** per workflow run.
+- The script itself has **no direct filesystem or shell access** — agents do that work, then return results as strings.
+- **No mid-run user input** is possible once a workflow starts, except for permission prompts on individual tool calls.
+- Spawned agents always run in `acceptEdits` mode, so file edits inside the workflow do not pause for approval.
+
+[^workflow-docs]: https://code.claude.com/docs/en/workflows.md — last verified 2026-06-21.
+
+## Triggering a workflow
+
+There are three ways to launch a workflow:
+
+1. **Natural language** — describe the job and Claude decides to use a workflow (from v2.1.160+).
+2. **`ultracode` keyword** — include the word `ultracode` in your prompt, or run `/effort ultracode`. This sets `xhigh` reasoning effort and tells Claude to plan a workflow for every substantive task.[^ultracode]
+3. **Saved slash command** — save a workflow to `.claude/workflows/<name>.js` and invoke it as `/<name>`.
+
+[^ultracode]: https://code.claude.com/docs/en/workflows.md — last verified 2026-06-21. `Alt+W` (Win/Linux) or `Option+W` (macOS) suppresses the trigger for a single prompt.
+
+Once running, use `/workflows` to inspect active and completed runs. Press `p` to pause/resume, `x` to stop, `s` to save.
+
+## The three structural patterns
+
+### Pattern 1: Pipeline
+
+A pipeline is a linear chain of agents where each stage transforms the output of the previous one. Use it when steps must happen in order and each step depends on the result of the last.
+
+```js
+// .claude/workflows/audit-and-fix.js
+const findings = await agent(
+  "Read the security audit at docs/audit.md and output a JSON array " +
+  "of findings, each with fields: id, severity, file, description."
+);
+
+const plan = await agent(
+  "Given these security findings:\n" + findings + "\n\n" +
+  "Write an ordered remediation plan. Group by severity. " +
+  "Output markdown with one numbered item per finding."
+);
+
+const result = await agent(
+  "Execute this remediation plan:\n" + plan + "\n\n" +
+  "Fix each item. Commit each fix separately with a conventional commit message."
+);
+
+return result;
+```
+
+**What makes this a pipeline:** each `await agent(...)` call blocks until the previous agent finishes. The outputs flow forward as strings. No stage runs until its input is ready.
+
+**When to use it:** when stage N genuinely cannot start without stage N-1's output — planning before execution, verification after generation, summarization after collection.
+
+### Pattern 2: Parallel fan-out
+
+Fan-out dispatches multiple agents simultaneously on independent sub-tasks and collects results with `Promise.all`. Use it when tasks do not share files and their outputs only need to be combined at the end.
+
+```js
+// .claude/workflows/typesafety-sweep.js
+const [authResult, leadsResult, opsResult] = await Promise.all([
+  agent(
+    "Fix all TypeScript errors in src/auth/ and src/session/. " +
+    "Run tsc --noEmit to confirm 0 errors in those directories."
+  ),
+  agent(
+    "Fix all TypeScript errors in src/leads/ and src/jobs/. " +
+    "Run tsc --noEmit to confirm 0 errors in those directories."
+  ),
+  agent(
+    "Fix all TypeScript errors in src/ops/ and src/directory/. " +
+    "Run tsc --noEmit to confirm 0 errors in those directories."
+  ),
+]);
+
+return [authResult, leadsResult, opsResult].join("\n\n---\n\n");
+```
+
+**The critical constraint:** tasks dispatched in parallel must not edit overlapping files. If two agents write to the same file simultaneously, the second write clobbers the first. Disjoint file scopes are required for correctness, not just performance.
+
+<Callout type="warning" title="Overlapping files cause silent data loss">
+There is no merge or conflict detection between parallel agents. If agents A and B both edit `src/lib/utils.ts`, whichever finishes last wins and the other's changes are gone. Partition your file scopes before dispatching parallel agents.
+</Callout>
+
+**When to use it:** code sweeps across independent modules, batch processing of many independent inputs, running tests in separate domains after a change.
+
+### Pattern 3: Loop
+
+A loop runs an agent repeatedly — either a fixed number of times, or until a condition in the result string is satisfied. Use it when you do not know up front how many iterations a job needs.
+
+```js
+// .claude/workflows/fix-until-green.js
+let remaining = 50; // guard against infinite loops
+let status = "failing";
+
+while (status !== "passing" && remaining > 0) {
+  remaining--;
+  const result = await agent(
+    "Run the test suite with: pnpm vitest run --reporter=json. " +
+    "If all tests pass, output exactly: STATUS:passing\n" +
+    "If tests fail, fix the first failing test, then output: STATUS:failing"
+  );
+
+  if (result.includes("STATUS:passing")) {
+    status = "passing";
+  }
+}
+
+return status === "passing"
+  ? "All tests passing."
+  : "Stopped after 50 iterations — tests still failing.";
+```
+
+**Always bound your loops.** The `remaining` counter is not defensive pessimism — it is a correctness requirement. An unbounded loop against a budget cap will drain the cap silently; an explicit guard produces a legible failure.
+
+**When to use it:** iterative refinement (generate → critique → revise), retrying flaky operations with backoff, processing a queue of items one at a time.
+
+## Combining patterns
+
+Real workflows compose these three primitives. A common shape is pipeline-with-internal-fan-out: a planning stage runs first (pipeline step 1), then the plan is decomposed into parallel subtasks (fan-out in step 2), then results are synthesized (pipeline step 3).
+
+```js
+// .claude/workflows/batch-review.js
+
+// Stage 1: discover scope (pipeline)
+const fileList = await agent(
+  "List every TypeScript file in src/ that has more than 5 lint errors. " +
+  "Output one absolute path per line, nothing else."
+);
+
+const files = fileList.trim().split("\n").filter(Boolean);
+
+// Stage 2: fix each file (parallel fan-out)
+const fixes = await Promise.all(
+  files.map(f =>
+    agent(`Fix all lint errors in ${f}. Run eslint on it to confirm 0 errors.`)
+  )
+);
+
+// Stage 3: summarise (pipeline)
+const summary = await agent(
+  "Summarise these per-file fix reports into a single short changelog entry:\n\n" +
+  fixes.join("\n\n")
+);
+
+return summary;
+```
+
+Notice the dynamic fan-out: the number of parallel agents is determined at runtime from stage 1's output, not hardcoded. This is a common and powerful pattern — discover, then parallelize across the discovered set.
+
+## Choosing the right pattern
+
+<DecisionTrees />
+
+Beyond the widget, a rough rule of thumb:
+
+| Situation | Pattern |
+|---|---|
+| Each step needs the previous step's output | Pipeline |
+| Tasks are independent and touch different files | Parallel fan-out |
+| You do not know how many iterations you need | Loop |
+| Planning before execution, synthesis after | Pipeline wrapping fan-out |
+
+## Saving and sharing workflows
+
+A workflow saved to `.claude/workflows/<name>.js` (project-shared) or `~/.claude/workflows/<name>.js` (personal) becomes a slash command `/<name>`.[^save-docs] Invoke it with arguments Claude passes as a structured `args` global — no argument parsing needed in your script.
+
+[^save-docs]: https://code.claude.com/docs/en/workflows.md — last verified 2026-06-21. In monorepos (v2.1.178+), saving writes to the closest `.claude/workflows/` directory between cwd and repo root.
+
+The bundled `/deep-research` is itself a saved workflow — fan-out web searches across independent query angles, then a pipeline synthesis step.
+
+## Permission management for long-running workflows
+
+Workflows that encounter an unapproved tool call (a shell command not in the allowlist, a domain not pre-approved for `WebFetch`) will pause and wait. In a long unattended run this means the entire workflow blocks until you approve.
+
+The fix: before starting a workflow you intend to run unattended, add the needed tool patterns to your allowlist.
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm *)",
+      "Bash(npm *)",
+      "Bash(git *)",
+      "Bash(eslint *)",
+      "WebFetch(domain:docs.example.com)"
+    ]
+  }
+}
+```
+
+In `dontAsk` mode or when running via the SDK, unapproved calls are auto-denied rather than pausing. Pre-approve everything you need or the workflow fails silently on the denied calls.
+
+## What the runtime does not guarantee
+
+Workflows are not transactions. If an agent in stage 2 edits three files and the workflow is stopped mid-run (`x` in `/workflows`), those edits remain on disk. The workflow does not roll back. Build your stages so each produces a committable checkpoint, and commit between stages when the job is long enough that partial completion is a risk.
+
+The runtime also does not deduplicate agent runs. If you restart a stopped workflow, agents from aborted stages will re-run from scratch. Idempotent agents (those that check their own output before doing work) are more resilient to restarts than agents that blindly overwrite.
+
+<Callout type="tip" title="Use file checkpoints as a restart boundary">
+Claude Code's file checkpointing (`fileCheckpointingEnabled: true`, on by default) snapshots files before each edit. `/rewind` can restore pre-edit state. In long workflows, committing after each major stage gives you an explicit restart boundary without relying on checkpoints.
+</Callout>
+
+## Recap
+
+Workflows give you deterministic control over how agents are sequenced and how many run at once, without filling the context window with intermediate results. The three primitives — **pipeline** (sequential, output-dependent), **parallel fan-out** (concurrent, disjoint scopes), and **loop** (iterative, bound with a guard) — compose into any repeatable multi-step job. Save the workflow as a slash command when the pattern is worth reusing.
+
+The next chapter covers **subagents** in depth — how to define them with YAML frontmatter, control their tool access and isolation, and coordinate multi-agent teams beyond what a single workflow script handles.

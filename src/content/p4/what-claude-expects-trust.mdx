@@ -1,0 +1,130 @@
+# What Claude expects from you & building trust
+
+Delegation is a two-way contract. Claude brings capability; you bring context, constraints, and calibrated autonomy. This chapter lays out exactly what your side of the contract looks like — what you owe Claude before the first prompt, how to grant autonomy without losing control, and how trust is earned in both directions over time.
+
+## The delegation contract
+
+When you hand a task to a capable colleague, you don't re-explain the entire codebase. You trust that they've read the docs, understand the domain, and know the guardrails. You say "fix the round-robin bug" — not "open `round-robin.service.ts`, find the function that counts assignments, check the sort logic, then…"
+
+Claude works the same way. Prompts in the 10–80 word range consistently produce the best results — not because brevity is a virtue, but because the context that makes short prompts work belongs in standing documentation, not in every message. When that documentation is thorough, the prompt only needs to carry the goal. The architecture docs, conventions, and known gotchas carry the rest. (Source: packet-E, F-33)
+
+<Callout type="tip" title="Invest in docs, not prompts">
+A 400-plus-line CLAUDE.md means a 20-word prompt can be enough. The ratio inverts what most people expect: the document does the heavy lifting; the prompt names the target.
+</Callout>
+
+This is not just convenience. It is what makes autonomous sessions safe. An agent that knows your schema, your RBAC rules, your known gotchas, and your sharp edges is far less likely to produce a change that looks right but breaks an invariant. Context you write once benefits every session. Context you repeat in prompts evaporates when the session ends.
+
+## What Claude needs from you
+
+### 1. A truthful picture of the codebase
+
+Claude cannot discover what you haven't described. If a module is deprecated but still on disk, say so — or Claude will touch it. If a migration pattern changed six months ago, update CLAUDE.md — or Claude will use the old pattern. If there are two ways to do something and one of them is wrong for your project, write down which is which.
+
+The highest-value lines in any `CLAUDE.md` are the "do not do this" entries: the anti-patterns that look plausible from the code but break invariants at runtime. When you find a new one, add it immediately. When you fix one, delete the bullet — stale gotchas are actively harmful because Claude will flag fixed problems as warnings.
+
+### 2. Clear scope and constraints
+
+Claude follows scope boundaries when they are explicit. "Fix the session expiry bug in the auth module" is a well-scoped task. "Clean up the auth code" is an invitation to touch files you didn't intend, discover adjacent issues, and expand the working set in ways that surprise you.
+
+For larger campaigns, the most reliable enforcement is physical rather than instructional. A git worktree per stage — a separate directory, a separate branch — means Claude literally cannot edit files that belong to a different batch. The scope is enforced at the filesystem level, not by an instruction that might get overridden when Claude finds a "related" issue two modules away. (Source: packet-E, F-10)
+
+```
+# Scoped prompt — effective
+Batch 3 of the audit: directory and realtime modules only.
+Fix findings B3-1 through B3-6. Do not touch auth, leads, or ops.
+
+# Under-scoped prompt — invites sprawl
+Fix the remaining audit findings.
+```
+
+### 3. A decision about autonomy level
+
+Every session involves an implicit choice: how much approval overhead do you want? The answer should be deliberate, not accidental.
+
+Claude Code offers six permission modes — from `default` (prompt for every potentially dangerous operation) to `bypassPermissions` (skip all checks, for isolated containers). In between: `acceptEdits` (auto-approve file writes and common filesystem ops), `plan` (read-only exploration, never auto-approve edits), and `dontAsk` (pre-approved tools only, everything else denied — useful for CI). (Source: packet-A, §3)
+
+The pattern that works for sustained autonomous sessions: `bypassPermissions` for the session, combined with a targeted `PreToolUse` hook that blocks the one irreversible side-effect you care about most. In practice, that is a hook that verifies git commit author identity and rejects AI attribution strings before any `git commit` Bash call goes through. Full autonomy for file writes and shell commands; a single hard gate at the boundary that matters. (Source: packet-E, F-05, F-27)
+
+<Callout type="warning" title="bypassPermissions is not for shared machines">
+This mode skips all permission checks. It is appropriate when Claude is working in an isolated worktree on your own machine, or in a sandboxed container. On a shared machine, or in a session where the scope is unclear, start with `acceptEdits` and add allow-rules as you go.
+</Callout>
+
+For engineers wiring Claude into automation pipelines, the relevant mode is `dontAsk`: tools not covered by explicit allow-rules in `settings.json` are denied rather than prompted. This gives you a deterministic, non-interactive agent suitable for CI/CD.
+
+### 4. Goals, not procedures
+
+The clearest signal that a delegation is well-formed: you have described *what* you want, not *how* to get it. Claude navigates the "how" better than a step-by-step instruction set can predict, especially when the task involves discovering the shape of the problem as it goes.
+
+Compare:
+
+| Instruction-oriented | Goal-oriented |
+|---|---|
+| "Open `round-robin.service.ts`. Find the assignment count query. Check whether it filters by UTC midnight. If not, add the filter." | "The round-robin is not resetting daily. Fix it." |
+| "Add a `bestTimeToCall` column to the Lead model, run `db:push`, then update the form component." | "Add best-time-to-call to the lead creation flow, including schema and UI." |
+
+The goal-oriented form gives Claude room to discover that the real problem is upstream of where you pointed, or that the "obvious" fix has a migration implication, or that the UI already has a similar pattern in a different component it should reuse. Procedure-oriented instructions short-circuit that discovery — they make Claude an executor rather than a collaborator.
+
+## What Claude owes you in return
+
+The contract runs both ways. Claude brings three things to its side:
+
+**Honesty about uncertainty.** When Claude doesn't know something, it should say so rather than confabulate a plausible-sounding answer. When it can't determine from context whether a pattern is intentional or a mistake, it should ask — not decide silently.
+
+**Conservative interpretation of scope.** A well-calibrated agent does not expand the working set on its own initiative. If the prompt says "fix the bug in auth", changes to the directory module need an explicit go-ahead, not a unilateral decision that "it was related."
+
+**Visible reasoning when stakes are high.** For irreversible operations — migrations, deletes, publishes — Claude should make its plan legible before executing, not after. The `/plan` mode and plan-first prompting patterns both serve this function.
+
+## How trust is earned — and maintained
+
+Trust between you and Claude is not a fixed property. It is a function of context richness, track record, and system design.
+
+<Mermaid chart={`flowchart LR
+    A[Thin context\nVague prompts] --> B[Unpredictable output\nFrequent surprises]
+    B --> C[Low autonomy\nHeavy approval loop]
+    C --> A
+
+    D[Rich CLAUDE.md\nScoped goals] --> E[Accurate output\nFew surprises]
+    E --> F[Higher autonomy\nLighter approval loop]
+    F --> D
+`} />
+
+The reinforcing loop in the lower half is where effective Claude users operate. It takes a few hours of upfront investment — writing the architecture doc, documenting sharp edges, setting up memory automation — and then every subsequent session costs less friction.
+
+Concretely:
+
+- **Start with lighter autonomy** on a codebase Claude hasn't seen before. Run a session or two in `acceptEdits` mode. Observe what surprises you. Document the surprises as gotchas or scope constraints.
+- **Expand autonomy as the context matures.** Once CLAUDE.md covers the invariants and the worktree discipline is in place, `bypassPermissions` with a commit hook is a reasonable operating point for a trusted, well-documented codebase.
+- **Treat surprises as documentation debt, not model failures.** When Claude does something unexpected, the first question is: "Was this in the docs?" Usually the answer is no. Add it. The same surprise will not recur.
+
+<Callout type="note" title="Memory across sessions preserves earned trust">
+The context that makes Claude accurate — the architecture knowledge, the sharp edges, the conventions — is not re-discoverable from the code on every session. Automated session memory (a PostToolUse hook that extracts key facts into structured files) means each session inherits what previous sessions learned. Without it, trust resets on every fresh context. (Source: packet-E, F-06, F-08)
+</Callout>
+
+## The automator's checklist
+
+For readers building systems where Claude runs without a human in the loop:
+
+```
+Before the first automated run:
+[ ] CLAUDE.md covers: architecture, conventions, anti-patterns, schema highlights
+[ ] Permission mode is dontAsk or bypassPermissions (isolated container)
+[ ] Allow-rules in settings.json enumerate every tool the workflow needs
+[ ] A PreToolUse hook guards the one irreversible side-effect you care about
+[ ] maxTurns and maxBudgetUsd caps are set on the agent options
+[ ] Session memory is automated (PostToolUse hook → fact extraction)
+[ ] Worktrees are used per-campaign so sessions cannot cross-contaminate
+
+After a run:
+[ ] Review what changed and document new gotchas
+[ ] If something unexpected happened, add a constraint — not a longer prompt
+```
+
+The last item deserves emphasis. The instinct after an unexpected result is to write a more specific prompt for next time. The better response is to write a new gotcha bullet in CLAUDE.md. Constraints in documents outlast constraints in prompts by an order of magnitude.
+
+## Recap
+
+The delegation contract asks you to provide: an accurate picture of the codebase (in documentation, not in prompts), explicit scope, a deliberate autonomy level, and goals rather than procedures. In return, Claude provides honest uncertainty signals, conservative scope interpretation, and legible reasoning before high-stakes operations.
+
+Trust is not a given — it is a feedback loop. Rich context produces accurate output; accurate output justifies higher autonomy; higher autonomy justifies the investment in richer context. The loop starts with the first draft of your `CLAUDE.md` and compounds from there.
+
+**Next:** Part 5 looks at the agent loop itself — what Claude does between receiving your goal and producing a result, how tool calls compose, and where the loop can go wrong.

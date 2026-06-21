@@ -1,0 +1,171 @@
+# Scheduling — cron, loop & background tasks
+
+Claude Code ships three scheduling primitives — `/cron`, `/loop`, and `/schedule` — that let work happen without you sitting at the keyboard. This chapter explains what each primitive does, when to reach for each one, and how to avoid the sharp edges that trip up most first-time users: missed runs, overlapping executions, and runaway loops.
+
+## Why "just run it manually" breaks down
+
+Ad-hoc prompts are fine for one-off tasks. They break down the moment you need work to happen at a predictable time, after a trigger you were not watching, or across dozens of items in parallel while you are asleep. The gap between "Claude can do this" and "Claude does this reliably without me" is exactly what scheduling primitives fill.
+
+The three primitives cover different points on the autonomy spectrum:
+
+| Primitive | When it fires | Stops when | Best for |
+|---|---|---|---|
+| `/loop` | Continuously, self-paced | You cancel it | Monitoring, polling, keep-alive |
+| `/cron` | On a time expression | Never (until removed) | Nightly jobs, recurring digests |
+| `/schedule` | At a specific future time | After one run | Deferred tasks, one-shot reminders |
+
+<Callout type="note" title="These run in the cloud, not your terminal">
+`/cron` and `/schedule` create *cloud agents* — they run on Anthropic's infrastructure even when your laptop is closed. `/loop` runs in your current session and stops when you end it. This matters for secrets: cloud agents need credentials available in their environment, not just on your machine.
+</Callout>
+
+## /loop — the continuous agent
+
+`/loop` keeps Claude running in a repeating cycle inside your current session. Each iteration is a full agent turn; Claude executes, reports, waits for the interval, then runs again.
+
+```
+/loop 5m check whether the test suite is green and alert me if it goes red
+```
+
+The interval syntax accepts plain English (`5m`, `30s`, `1h`) or cron-style expressions for the `/cron` primitive covered next.
+
+**When `/loop` is the right choice:**
+
+- Watching a long-running process you want updates on
+- Polling an external API until a condition changes
+- Keeping a background task alive while you work on something else in a second session
+
+**When to stop using it:**
+
+- When you want runs that survive past your session — use `/cron` instead
+- When each iteration is independent and does not need the previous iteration's result — `/cron` is cleaner
+
+### Loop gotcha: runaway context
+
+Each loop iteration appends to the session's context window. Over many iterations this fills the window, triggers compaction, and inflates cost. If iterations are truly independent — checking a dashboard, sending a digest — they do not need to share context. Use `/cron` in that case; it starts a fresh agent context on every execution.
+
+If you genuinely need state to flow between iterations (tracking a counter, accumulating results), keep a simple state file that the agent reads and writes rather than relying on the growing context.
+
+## /cron — time-based automation
+
+`/cron` registers a recurring cloud agent that fires on a schedule and runs independently of your session. You describe what you want and optionally provide a cron expression; the agent figures out the schedule and registers it.
+
+```
+/cron daily at 8am summarise yesterday's GitHub notifications and email me the digest
+```
+
+Claude Code translates this to a standard 5-field cron expression (minute, hour, day-of-month, month, day-of-week) under the hood. You can also write expressions directly if you want precision:
+
+```
+/cron "30 8 * * 1-5" run the weekly sales report and post it to Slack
+```
+
+Common expressions:
+
+| Expression | Meaning |
+|---|---|
+| `0 9 * * *` | Every day at 9:00 AM |
+| `*/15 * * * *` | Every 15 minutes |
+| `30 8 * * 1-5` | Weekdays at 8:30 AM |
+| `0 0 1 * *` | First day of each month at midnight |
+
+A fast way to validate an expression before committing: [crontab.guru](https://crontab.guru) parses and explains any 5-field expression in plain English.
+
+<Callout type="warning" title="Timezone is not automatic">
+Cloud agents default to UTC. If your cron is for a morning digest at 8 AM, and you are in IST (UTC+5:30), `30 2 * * *` is the expression you need — not `0 8 * * *`. State your timezone explicitly when you create the cron; the agent will convert it. Forgetting this is the single most common cause of crons firing at the wrong time.
+</Callout>
+
+### Managing existing crons
+
+```
+/cron list            # see all registered crons with their IDs and last-run status
+/cron delete <id>     # remove a cron
+/cron pause <id>      # suspend without deleting
+```
+
+### Preventing overlapping runs
+
+A cron that fires every 5 minutes and takes 6 minutes to complete will overlap itself. The second execution starts before the first finishes, and if they both write to the same output — a Google Sheet, a Slack channel, a file — you get duplicated or corrupted data.
+
+Two defences:
+
+1. **Set the interval wider than the worst-case execution time.** If the job usually takes 3 minutes but occasionally spikes to 7, use a 10-minute interval.
+2. **Use idempotency guards.** Write the agent's task so it checks whether today's work is already done before doing it again. "Append a row only if today's date is not already in column A" is trivially idempotent.
+
+## /schedule — deferred one-shot tasks
+
+`/schedule` queues a single future run. Unlike `/cron`, it does not repeat.
+
+```
+/schedule in 2 hours run the deployment checklist for the v2.1 release
+/schedule tomorrow at 9am remind me to review the open PRs from last week
+```
+
+The agent accepts natural language time expressions ("in 2 hours", "tomorrow at 9am", "next Monday") and converts them to absolute timestamps. You can review and cancel pending schedules the same way as crons:
+
+```
+/schedule list
+/schedule cancel <id>
+```
+
+`/schedule` is the right tool when you want to hand something off to a future version of yourself or need a deferred action that depends on something happening first (a deploy finishing, a meeting ending, a client responding).
+
+## Choosing the right primitive
+
+<DecisionTrees />
+
+If the decision tree above points you toward a workflow tool (for high-volume or complex multi-step scheduling), n8n and Zapier are the two most common options covered in more depth in the Automator track. For reference: n8n's Schedule Trigger node uses the same 5-field cron format, and Zapier's Zap triggers offer a similar time-based model. The primitives in Claude Code are intentionally simpler — they are designed for agent-driven tasks, not general-purpose workflow orchestration.
+
+## Building a practical background system
+
+A reliable personal automation system is not one giant cron that does everything — it is a set of small, focused agents, each with a clear scope and a clear output.
+
+<Mermaid chart={`
+flowchart LR
+    subgraph Morning["Morning (8:30 AM weekdays)"]
+        A["/cron: daily brief"] --> B["Pull calendar + email\nSummarize with Claude\nSend digest email"]
+    end
+
+    subgraph Continuous["Continuous (/loop)"]
+        C["/loop 10m: CI watcher"] --> D["Check test suite\nAlert on red"]
+    end
+
+    subgraph Deferred["One-shot (/schedule)"]
+        E["/schedule: deploy check"] --> F["Run checklist\nPost to Slack"]
+    end
+
+    B --> G["Inbox"]
+    D --> H["Notification"]
+    F --> I["Slack channel"]
+`} />
+
+A few design principles that make this kind of system maintainable:
+
+**Name things descriptively.** "Daily Sales Report — 8 AM Weekdays" is findable in `/cron list`. "Workflow 1" is not. The agent accepts the name as part of the description.
+
+**One cron, one job.** Agents that do five unrelated things in one execution are hard to debug and hard to adjust. Split them.
+
+**Automate the stable, not the experimental.** Automation scales your process as-is. If the underlying task is not yet reliable when you do it manually, a cron will scale the unreliability. Get the task right by hand first, then automate.
+
+**Start with a manual trigger before scheduling.** Run `/schedule in 1 minute <task>` and watch the output before committing to a daily cron. Catching a broken prompt or missing credential takes 60 seconds this way; catching it after a week of silent failures takes longer.
+
+<Callout type="tip" title="Credentials for cloud agents">
+Cloud agents (`/cron`, `/schedule`) do not have access to local environment variables or files. If your task needs API keys or credentials, configure them through the `/env` or `/schedule env` commands so the cloud runner can reach them. Anything you are relying on from your local `.env` file will silently fail in a cloud agent.
+</Callout>
+
+## Error handling for scheduled work
+
+Scheduled agents run unattended. When something goes wrong — an API is down, a credential expired, a rate limit was hit — you need to know about it without polling the logs manually.
+
+Three patterns that age well:
+
+**Alert on failure, not on success.** Most runs succeed. Configure your agent to post a Slack message or send an email only when something goes wrong. Alerting on every successful run creates noise that trains you to ignore alerts.
+
+**Distinguish transient from persistent failures.** A timeout or a `429 Too Many Requests` response is worth retrying after a short wait. A credential error or a `404` on a resource that should exist is not — retrying it wastes time and delays the alert. Write your agent's task to treat these differently: "if the API returns 429, wait 60 seconds and try once more; if it returns 401, send me an alert immediately and stop."
+
+**Keep a simple run log.** Append a one-line JSON entry (timestamp, status, summary) to a file or sheet on each execution. When a cron has been running for three months and you are not sure why it exists, the log tells you.
+
+## Recap
+
+`/loop` keeps a task running continuously in your session; use it for monitoring and polling. `/cron` registers a time-based recurring cloud agent that fires independent of your session; use the 5-field cron format and always specify your timezone. `/schedule` queues a single deferred run; use it for handoffs and release ceremonies. The decision comes down to three questions: does it need to persist past your session, does it repeat on a schedule, or does it fire once in the future?
+
+The next chapter covers Zapier MCP — giving Claude hands across 9,000+ apps for on-demand action rather than time-based scheduling, and how the two approaches complement each other.

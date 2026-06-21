@@ -1,0 +1,236 @@
+# Cost-tiering — cheap for grunt, expensive for judgment
+
+Every agent pipeline has two kinds of work: mechanical work that needs to be done correctly, and judgment work that needs to be done wisely. Routing each kind to the right model tier is the single highest-leverage cost decision in agent design. This chapter gives you the framework for that decision — how to identify which tier a task belongs in, how to wire the model field in subagent definitions, and how real multi-stage pipelines have applied it.
+
+## Why the tier decision matters more than it looks
+
+Model invocations are the dominant cost in an agent pipeline. Unlike cloud compute, where you pay for uptime, you pay for model tokens whether the task needed deep reasoning or not. A mechanical verification step run on an expensive model is not just wasteful — it makes your pipeline slower because capable models take longer to respond, which extends wall-clock time for tasks that do not benefit from the extra capability.
+
+The converse failure is also real: routing a task that requires genuine judgment to a cheap model, then treating its output as authoritative, produces errors that are expensive to recover from downstream. Wrong architecture decisions, missed edge cases, subtly incorrect security fixes — the cost of these dwarfs the few tokens you saved.
+
+The framework is simple: match model cost to the value that model capability delivers on that specific subtask.
+
+<Callout type="note" title="Capability tiers are relative, not absolute">
+Specific model names and pricing shift over release cycles. The principle — cheap model for mechanical tasks, capable model for judgment tasks — is stable. "Cheap" and "capable" here are relative terms within whatever model family you have access to: a fast, smaller model vs. a slower, larger one. Apply the framework to whatever tiers exist when you read this.
+</Callout>
+
+## The two task classes
+
+Nearly every subtask in an agent pipeline falls into one of two classes.
+
+**Mechanical tasks** have objectively correct outputs you could verify with a script. Examples:
+
+- Count the number of test cases in a file and compare to a threshold.
+- Extract a list of failing TypeScript error codes from `tsc --noEmit` output.
+- Check whether a diff touches only files in a declared scope.
+- Summarize a session transcript into a compact bullet list (the shape is deterministic even if the prose varies).
+- Confirm a suite is green by reading test runner output.
+
+These tasks do not require the model to reason about the problem domain. They require it to parse structured input and produce structured output. A capable model does them correctly. A cheap model does them correctly and returns faster and cheaper. There is no quality advantage to over-spending here.
+
+**Judgment tasks** have outputs where capability differences produce meaningfully different quality. Examples:
+
+- Design the API surface for a new module.
+- Identify which of twelve open issues shares a root cause.
+- Review a 400-line diff for security vulnerabilities.
+- Write a system prompt that handles edge cases a simple version would miss.
+- Decide how to partition a migration across phases to minimize risk.
+
+These tasks reward deeper reasoning. A capable model with higher effort will catch things a cheap model misses — and those misses are not random; they tend to cluster on exactly the cases that matter most.
+
+<Mermaid chart={`
+graph LR
+    TASK["Incoming subtask"]
+    Q1{"Can a script verify<br/>the output?"}
+    Q2{"Is domain<br/>knowledge required?"}
+    CHEAP["Cheap tier<br/>(fast, low cost)"]
+    CAPABLE["Capable tier<br/>(slower, higher cost)"]
+
+    TASK --> Q1
+    Q1 -- "Yes" --> CHEAP
+    Q1 -- "No" --> Q2
+    Q2 -- "No — parse + emit" --> CHEAP
+    Q2 -- "Yes — reason + decide" --> CAPABLE
+
+    style CHEAP fill:var(--tip-subtle),color:var(--fg)
+    style CAPABLE fill:var(--note-subtle),color:var(--fg)
+`} />
+
+## Where this appears in Claude Code
+
+Claude Code surfaces the tier decision in three places.
+
+### The `model` field in subagent definitions
+
+Every subagent definition file can specify which model it uses:
+
+```markdown
+---
+name: gate-checker
+description: Verifies that a diff touches only declared files and the test count has not dropped.
+model: claude-haiku-4-5
+tools:
+  - Bash
+  - Read
+maxTurns: 5
+---
+
+You are a verification gate. You receive a scope declaration (list of allowed files)
+and a diff. Check:
+1. Every changed file is in the scope list.
+2. The test count in each changed test file is >= the count before the diff.
+3. `pnpm vitest run` exits 0.
+
+Output a one-line verdict: PASS or FAIL, and a brief reason.
+```
+
+The parent orchestrator dispatches this agent at the verification step without caring which model it uses internally. The model selection is an implementation detail of the agent definition, not the orchestrator prompt.
+
+### The `model` field in the SDK's `query()` options
+
+When embedding agents in your own application via the Agent SDK, pass `model` as an option alongside `prompt`, `maxTurns`, and `effort`:
+
+```typescript
+// Expensive judgment step
+const planResult = await query({
+  prompt: `Review the migration plan and identify risks`,
+  model: 'claude-opus-4-5',
+  effort: 'high',
+  maxTurns: 20,
+})
+
+// Cheap mechanical step
+const gateResult = await query({
+  prompt: `Check that the diff is within scope. Scope: ${scope}`,
+  model: 'claude-haiku-4-5',
+  effort: 'low',
+  maxTurns: 3,
+})
+```
+
+The two calls represent two different tiers for two different purposes. The effort level moves independently of the model — setting `effort: 'low'` on the capable model trims its thinking budget even if you want that model for domain reasons.
+
+### The `effortLevel` setting and `/effort` command
+
+Effort level is a second axis on top of model selection. `low | medium | high | xhigh | max` control the reasoning depth per turn — more effort means more thinking tokens, higher cost, and slower response, but better results on complex problems. (Source: packet-A, §1)
+
+Effort level applies within a model tier, not across tiers. A cheap model at `xhigh` effort is not equivalent to a capable model at `low` effort. Use effort to tune within a tier, not as a substitute for picking the right tier.
+
+## A real pipeline: the five-stage audit
+
+The audit remediation case study — 123 security findings fixed across 7 domain batches in two days — ran a five-stage pipeline per batch that explicitly assigned each stage to an appropriate tier. (Source: packet-E, F-14)
+
+```
+Stage 1 → Capable model (Sonnet): re-verify findings against live branch.
+Stage 2 → Capable model (Sonnet): TDD implementer — write tests first, then implementation.
+Stage 3 → Cheap model (Haiku): verification gate — test count, diff scope, no regressions.
+Stage 4 → Capable model (Sonnet): adversarial review for regressions and false fixes.
+Stage 5 → Capable model (Sonnet): apply review findings.
+```
+
+Stage 3 is the critical tier decision. The verification gate asks: did the test count hold? Does the diff stay in scope? Is the suite green? These are yes/no questions with objectively correct answers. A cheap model answers them correctly. The stage was fast, low-cost, and ran on every batch without accumulating meaningful spend — which is exactly what made it practical to include at all.
+
+<AgentOrchestrationVisualizer />
+
+The visualizer above shows how pipeline stages with different model tiers map to different lane heights and colors. Switch to the audit pipeline preset to see the tier assignments laid out across the five stages. Notice how the cheap verification lane is narrow (few turns, short wall-clock time) while the capable implementation lanes are taller and slower.
+
+## Practical decision guide
+
+For any new subtask in a pipeline you are designing, answer three questions in order:
+
+**1. Can the output be verified programmatically?**
+If yes, the task is mechanical. Use the cheap tier.
+
+**2. Does the task require understanding the problem domain?**
+If no (it is parsing, counting, formatting, extracting), use the cheap tier. If yes, continue.
+
+**3. What is the cost of a wrong output?**
+If wrong output is caught by the next stage (a verification gate, a test run, a human review), a moderate capability level may be fine. If wrong output propagates unchecked into production or into another agent's context as ground truth, use the capable tier with higher effort.
+
+<Callout type="warning" title="Never skip a verification gate to save cost">
+The gate is cheap. A bad output from the stage before it that reaches production is expensive. The temptation to remove the gate when budgets are tight is exactly backwards — the gate is what makes cheap models safe to use at scale.
+</Callout>
+
+## Wiring it in practice
+
+A minimal two-tier subagent roster for a code-change pipeline:
+
+```yaml
+# .claude/agents/domain-planner.md
+---
+name: domain-planner
+description: Plans the approach for a new feature or change, identifies risks, scopes the work.
+model: claude-sonnet-4-5
+effort: high
+maxTurns: 15
+tools:
+  - Read
+  - Glob
+  - Grep
+---
+```
+
+```yaml
+# .claude/agents/scope-gate.md
+---
+name: scope-gate
+description: Verifies a diff stays within a declared file scope and the test suite is green.
+model: claude-haiku-4-5
+maxTurns: 4
+tools:
+  - Bash
+  - Read
+---
+```
+
+The orchestrator never hard-codes model names in its prompt. It dispatches `domain-planner` for the planning step and `scope-gate` for the verification step. If you want to upgrade the planner to a more capable model next quarter, change one line in one file.
+
+## Budget caps as a safety net
+
+The `maxBudgetUsd` option in the SDK's `query()` call sets a hard spend ceiling per agent invocation. (Source: packet-A, §1)
+
+```typescript
+const result = await query({
+  prompt: analysisPrompt,
+  model: 'claude-opus-4-5',
+  effort: 'high',
+  maxBudgetUsd: 0.50,   // hard ceiling; emits error_max_budget_usd if hit
+  maxTurns: 30,
+})
+```
+
+`maxBudgetUsd` does not replace tier decisions — it is a guard against runaway loops on capable models, not a reason to run judgment tasks on cheap ones. Set it on every capable-tier invocation in automated pipelines. If it fires unexpectedly, the `ResultMessage` subtype `error_max_budget_usd` tells you to investigate why the task needed more turns than budgeted.
+
+## The effort-vs-tier distinction
+
+A common point of confusion: effort level (`low | medium | high | xhigh | max`) and model tier are independent controls that compose.
+
+- **Model tier** determines the model's capacity for reasoning — how much capability it has.
+- **Effort level** determines how much of that capacity it uses per turn — thinking tokens, reasoning depth.
+
+Running a capable model at `low` effort gives you fast, cheap responses from a high-ceiling model — useful when you need the model's domain knowledge but the specific task is not complex. Running a cheap model at `xhigh` effort gives you the model's best attempt at a hard problem — but the ceiling is lower, so the ceiling matters more than the effort for truly difficult reasoning tasks.
+
+The useful combinations:
+
+| Model tier | Effort | Use case |
+|---|---|---|
+| Cheap | `low` | Pure mechanical — parse, count, format |
+| Cheap | `medium` | Slightly structured judgment — summarization, extraction with judgment |
+| Capable | `medium` | Standard engineering tasks, code review |
+| Capable | `high` / `xhigh` / `max` | Architecture decisions, complex debugging, adversarial review |
+
+## The built-in agents already do this
+
+Claude Code's built-in subagents demonstrate the pattern. The `Explore` agent runs on Haiku — a cheaper, faster model — for read-only codebase search. The `claude-code-guide` agent also runs on Haiku for answering feature questions. (Source: packet-A, §7)
+
+These are mechanical tasks: search files matching a pattern, retrieve documentation about a feature. They do not require the depth of a capable model. By routing them to Haiku, Claude Code keeps the cost of ambient, exploratory operations low without degrading the quality of those specific operations.
+
+The session memory extraction in the `remember` plugin follows the same logic: a cheap model is used to summarize session transcripts into compact bullet points, running after every tool call on a cooldown timer. (Source: packet-E, F-06) The task is deterministic in shape even if not in content — summarize N exchanges into M bullets — and the cheap model handles it correctly while keeping extraction cost negligible across hundreds of sessions.
+
+## Recap
+
+Model tier is a per-subtask decision, not a per-session one. Mechanical tasks — those with objectively verifiable outputs, no domain reasoning required — belong on the cheap tier. Judgment tasks — those requiring domain knowledge, careful reasoning, or where errors propagate unchecked — belong on the capable tier. The two tiers compose: a five-stage pipeline can use capable→capable→cheap→capable→capable and pay cheap rates only for the gate in the middle.
+
+Wire the tier into the subagent `model` field, not into the orchestrator's prompt. Keep budget caps on every capable-tier invocation in automated pipelines. Never remove verification gates to save money; the gate is what makes cheap models safe to use at scale.
+
+The next chapter covers budget governance at the pipeline level — how to track cumulative spend across parallel agent branches, set policies that prevent runaway costs in production, and instrument pipelines so spend anomalies surface before they become incidents.

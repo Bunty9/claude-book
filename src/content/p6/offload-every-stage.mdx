@@ -1,0 +1,278 @@
+# Offloading every stage of dev
+
+Software development has seven distinct phases — explore, design, plan, write tests, implement, review, and ship — and Claude can carry meaningful load in each one. This chapter shows you how to hand off each stage deliberately, which model tier and tool to reach for, and how to stitch the stages into a repeatable pipeline that lets you stay at the level of decisions rather than keystrokes.
+
+## The seven-stage map
+
+Most guides treat Claude as a code-completion tool that happens to write longer completions. That undersells it badly. The stages before coding — exploration, design, planning — and the stages after — review and shipping — are where Claude's leverage is highest, because those are exactly the stages humans are most likely to skip or rush.
+
+<Mermaid chart={`
+flowchart LR
+    E["Explore\nunderstand the problem\n+ codebase"]
+    D["Design\narchitecture + trade-offs"]
+    P["Plan\nordered task list"]
+    T["TDD\nfailing tests first"]
+    I["Implement\ncode + passing suite"]
+    R["Review\nmulti-agent critique"]
+    S["Ship\nCI + deploy + verify"]
+
+    E --> D --> P --> T --> I --> R --> S
+
+    style E fill:var(--bg-subtle),color:var(--fg)
+    style D fill:var(--bg-subtle),color:var(--fg)
+    style P fill:var(--bg-subtle),color:var(--fg)
+    style T fill:var(--accent-subtle),color:var(--fg)
+    style I fill:var(--accent-subtle),color:var(--fg)
+    style R fill:var(--bg-subtle),color:var(--fg)
+    style S fill:var(--bg-subtle),color:var(--fg)
+`} />
+
+The rest of this chapter walks each stage in order. For each one: what to hand off, how to prompt it, and what to keep for yourself.
+
+## Stage 1 — Explore
+
+Before writing a line of code you need to understand the shape of what already exists. This is the stage engineers most often skip when under time pressure, and where Claude pays back the most.
+
+The built-in `Explore` subagent (powered by a fast, cheap model) is built exactly for this: read-only codebase search, no CLAUDE.md loading, optimized for speed. You do not invoke it directly — Claude spins it up automatically when it needs to gather facts before acting.
+
+What you *do* control is the framing of your prompt. A good exploration prompt names the surface area to investigate and the question you need answered:
+
+```
+Read src/lib/storage.ts and every file that imports it.
+Tell me: what operations does it expose, what calls it uses internally,
+and which callers would break if the return type changed from string to
+{ key: string; url: string }.
+```
+
+This produces a focused answer, not a tour of the codebase. Claude uses `Grep` (which respects `.gitignore`) to find callers, `Read` to inspect them, and returns a structured summary — not a dump of every file.
+
+<Callout type="tip" title="Plan mode is your pre-commit exploration gate">
+Press `Shift+Tab` twice in the CLI to enter plan mode. In this mode Claude explores freely — reads, greps, traces call graphs — but cannot write or edit files. Use it to audit your assumptions before you commit to an implementation direction. When the plan looks right, exit plan mode and let Claude execute. (Source: packet-A, §3)
+</Callout>
+
+### What to keep for yourself
+
+Domain knowledge that is not in the codebase. Claude can read files; it cannot read the meeting where you learned the third-party API has a 60-second timeout in production. Put that in the prompt.
+
+## Stage 2 — Design
+
+Design is the stage where you choose between approaches. It is collaborative by nature: you bring constraints, Claude brings options and trade-offs.
+
+The prompt shape that works best is an explicit invitation to enumerate, not a directive to decide:
+
+```
+I need to add real-time notifications to this CRM. The backend is Express
+with Socket.io already wired. Three users can see the same lead simultaneously.
+What are the realistic approaches for delivering per-user notifications,
+and what does each cost in infrastructure complexity?
+```
+
+Claude will enumerate the options — rooms per user (already available), presence-table polling, a separate pub-sub service — with concrete trade-offs for each. Your job is to read the trade-offs, apply the constraints Claude cannot see (budget, team size, timeline), and choose.
+
+After you choose, use a narrowing turn:
+
+```
+Given that we have a Redis instance already and zero budget for new infra,
+walk through the Socket.io user-rooms approach step by step. What changes
+to the auth handshake, what new event names, what does the teardown look like?
+```
+
+This second turn converts the selected option into a design document — prose that can feed directly into stage 3.
+
+### Using `/plan` for structured design review
+
+The `/plan` slash command puts Claude into plan mode and switches it to the built-in `Plan` subagent — a research-first mode that reads the codebase before committing to a direction. Issue `/plan` before a complex prompt and Claude will explore, then present a plan for your approval before touching any file. This is the correct entry point for significant architectural changes. (Source: packet-A, §6)
+
+## Stage 3 — Plan
+
+A plan is a design translated into an ordered, dependency-aware task list. It is the artifact that makes the implementation stage autonomous.
+
+The critical property of a good plan: each task is atomic enough that completing it leaves the codebase in a valid state. A task like "add WebSocket support" is not atomic. "Add `socket.io` to the express server and confirm `GET /api/v1/health` still returns 200" is atomic.
+
+Ask Claude to produce the plan in a numbered list with explicit dependencies:
+
+```
+Turn the design we just agreed on into a task list.
+Each task should: state what changes, name the files touched,
+and note any task that must be complete before this one can start.
+Keep each task small enough to commit separately.
+```
+
+<Callout type="note" title="Plans belong outside the repo">
+Spec and plan documents have a short half-life — they are useful during the implementation sprint and outdated the moment the code ships. Store them outside your git repo (a sibling directory that is not a git repository works well) so you are never tempted to commit them. The architecture doc *is* the long-lived record; update that instead. (Source: packet-E, F-29)
+</Callout>
+
+Once the plan is approved — by you, not by Claude — you have a task list you can feed back to Claude one item at a time, or dispatch in parallel to subagents when the tasks operate on disjoint files.
+
+## Stage 4 — TDD (write tests first)
+
+With a plan in hand, the correct next step is to write the failing tests before writing any implementation. This is not optional ceremony — it is what makes the implementation stage safe to offload.
+
+<TDDLoopVisualizer />
+
+The widget above shows the Red → Green → Refactor cycle. Notice the **Agent contribution** bar: Red and Green are high-automation phases where a cheap model carries most of the cognitive load. Refactor is lower — structural judgement still tilts human.
+
+For each task in your plan, the Red phase prompt is narrow:
+
+```
+Task: "Emit a `notification:push` Socket.io event when a note is created."
+Write the test in src/notifications/__tests__/note-notification.test.ts.
+The test should fail (the event is not emitted yet).
+Run `pnpm vitest run src/notifications/__tests__/note-notification.test.ts`
+to confirm the failure.
+Do not create the implementation.
+```
+
+The constraint "do not create the implementation" is load-bearing. Without it, an eager model will implement and test in one pass, skipping the red phase entirely and losing the specification benefit.
+
+A real security audit remediation that covered 123 findings used exactly this structure per domain batch: a Sonnet-tier model wrote tests first, a cheap model ran the verification gate (test count, diff scope, no regressions), and only then did implementation proceed. The cheap model at the gate is deliberate — verification is a mechanical yes/no question that does not need deep reasoning, and running it cheaply lets you afford to gate every increment. (Source: packet-E, F-14)
+
+## Stage 5 — Implement
+
+With red tests in place, the Green phase is the most mechanical stage of the pipeline: make the tests pass with the minimal implementation.
+
+```
+The failing test is in src/notifications/__tests__/note-notification.test.ts.
+Create src/notifications/note-notification.ts and any changes to the note
+creation path needed to make the suite pass.
+Run the test file after each attempt.
+Stop when fully green. Do not add untested logic.
+```
+
+The phrase "do not add untested logic" prevents gold-plating. Claude tends to implement slightly more than is needed; this constraint keeps the diff reviewable.
+
+### Matching model tier to phase
+
+Not every stage needs the most capable model. The pattern that emerges from sustained production use: (Source: packet-E, F-14)
+
+| Phase | Tier | Reasoning |
+|---|---|---|
+| Explore | Haiku (built-in Explore agent) | Read-only; speed matters |
+| Design | Sonnet or higher | Trade-off analysis benefits from deeper reasoning |
+| Plan | Sonnet | Dependency ordering is moderately complex |
+| Red tests | Sonnet or cheap | Spec-to-test is structured; cheap is fine for simple specs |
+| Green implementation | Sonnet or cheap | Mechanical for well-defined tests |
+| Verification gate | Haiku | Yes/no gate; cheapest correct option |
+| Refactor | Sonnet or higher | Structural judgement; worth the extra capacity |
+| Review | Sonnet (multiple agents) | Parallel; each agent focused on one dimension |
+
+Running a capable model at every stage is like paying a senior engineer to count lines of code. Match the model to the difficulty of the reasoning required at that stage.
+
+### Keeping context clean across stages
+
+Each implementation task should run in its own worktree. Claude Code stores session history per working directory, so a worktree at `../feat/note-notifications` has its own session — its intermediate tool outputs, file reads, and failed attempts do not accumulate in your main project session. When the task is done, the worktree's history stays there; your main session receives a one-paragraph summary. (Source: packet-E, F-10; packet-A, §7)
+
+The right mental model: the worktree is the implementation agent's sandbox. The main checkout is where you review and integrate.
+
+## Stage 6 — Review
+
+The review stage is where parallelism pays its highest dividend. A single linear code review misses things — not because reviewers are careless, but because different quality dimensions require different attention modes. Security thinking and readability thinking do not co-exist well in a single pass.
+
+The pattern that works: dispatch multiple subagents in parallel, each with a different review focus and a disjoint concern.
+
+```
+Dispatch four parallel review agents on the diff at HEAD:
+1. Security agent — look for injection, auth bypass, trust boundaries
+2. Correctness agent — look for logic errors, off-by-ones, null paths
+3. Test coverage agent — identify untested branches and edge cases
+4. Contract agent — verify API response shapes match frontend expectations
+Each agent should produce a numbered finding list. Do not try to fix — only report.
+```
+
+After all four return, a final Sonnet-tier agent triages the findings by severity and identifies any overlaps or contradictions.
+
+An 8-agent review pass on a large RBAC feature caught 7 critical and 11 high-severity issues before merge — including a synchronous JWT verification call inside an async socket handler that caused process crashes in production, and a hardcoded action list that silently dropped four new RBAC actions from the UI. Neither finding was caught by the automated test suite, because both were architectural issues that only a targeted human-mode review would surface. (Source: packet-E, F-16)
+
+<Callout type="warning" title="Review agents report; they do not fix">
+Keep the review and fix stages separate. A review agent that also applies fixes conflates two different reasoning tasks and produces worse output at both. Let the review agents produce findings, then start a new implementation pass to address them — one finding at a time, back through the TDD cycle if the fix is non-trivial.
+</Callout>
+
+### The verification gate between review and merge
+
+Before merging, run a cheap agent as a final gate:
+
+```bash
+# Verify test count has not dropped
+BEFORE=$(git show origin/dev:src/notifications/__tests__/note-notification.test.ts | grep -c "^\s*it(")
+AFTER=$(grep -c "^\s*it(" src/notifications/__tests__/note-notification.test.ts)
+[ "$AFTER" -ge "$BEFORE" ] || { echo "GATE FAIL: tests dropped"; exit 1; }
+```
+
+Exit code 2 from a hook blocks the merge. The same semantics apply to a cheap agent checking the result: yes/no questions, mechanical verification, exit code for pass/fail. (Source: packet-A, §5)
+
+## Stage 7 — Ship
+
+Shipping is a sequence: open PR, run CI, merge, watch the deploy, verify the live environment. All of it is delegatable as a goal:
+
+```
+Open a PR from feat/note-notifications to dev.
+Run the full e2e review using the review toolkit.
+When the review is clean, merge the PR.
+After the auto-CD fires, verify the notification flow works in the staging environment.
+```
+
+The key word is *goal*. The prompt does not list steps — it names the end state. Claude infers the steps from the CLAUDE.md, which should document your deploy workflow, your CI commands, and how to verify a successful deploy. (Source: packet-E, F-33)
+
+Invest in the CLAUDE.md and you write shorter prompts forever. A 400-line CLAUDE.md means a 20-word "ship it" prompt contains everything Claude needs to act correctly. That ratio — long standing document, short per-session prompt — is the pattern that makes autonomous shipping safe. (Source: packet-E, F-20)
+
+<Callout type="note" title="Session memory is the continuity layer between stages">
+When a stage takes multiple sessions — or when you hand off to a fresh context — the memory system is what prevents you from re-explaining work already done. The remember pattern (automated PostToolUse extraction into dated logs) means "continue from where you left off" is a complete instruction. The session picks up from the last extracted summary, not from your recollection of what happened three sessions ago. (Source: packet-E, F-06, F-21)
+</Callout>
+
+## Putting it together — a single-feature pipeline
+
+Here is how the seven stages look end to end for a realistic feature (adding per-user push notifications to a CRM):
+
+```
+1. Explore [plan mode, ~5 min]
+   "Read the Socket.io setup and every route that currently emits events.
+    What would break if we added a per-user emit to the note creation path?"
+
+2. Design [collaborative, ~10 min]
+   "Given the Redis instance already in prod, design the user-room approach
+    for notification delivery. Enumerate the handshake change, event names,
+    and teardown."
+
+3. Plan [Claude → approval, ~5 min]
+   "Turn the design into a task list. Atomic tasks. Named files. Dependencies
+    explicit. Each task committable."
+
+4. Worktree setup
+   ./scripts/create-worktree.sh feat/note-notifications
+
+5. TDD — Red [cheap agent, ~3 min per task]
+   "Write failing tests for task 1. Confirm they fail. Stop."
+
+6. TDD — Green [cheap agent, ~5 min per task]
+   "Make the tests pass with minimal implementation. Stop when green."
+
+7. Verification gate [Haiku, ~1 min]
+   "Test count unchanged? Diff in scope? Suite clean? Report pass/fail."
+
+8. Refactor [Sonnet, ~5 min per task]
+   "Clean up task 1 implementation. Suite must stay green."
+
+9. Review [4 parallel agents, ~10 min]
+   "Security / correctness / coverage / contracts. Report only."
+
+10. Ship [goal prompt, ~15 min automated]
+    "PR to dev, e2e review, merge when clean, verify in staging."
+```
+
+Total human time: specification (stages 1–3), approval at each gate, and review of findings. Automated time: everything in between.
+
+## What you never hand off
+
+Three things stay yours regardless of how capable the pipeline becomes:
+
+**Acceptance criteria.** Claude can translate a spec into tests. It cannot author the spec. The specification of what "done" means — in observable, testable terms — is the engineer's irreducible contribution.
+
+**Trade-off calls under hidden constraints.** Design trade-offs that depend on information not in the codebase — political constraints, budget decisions, future roadmap commitments — cannot be delegated to a model. Name those constraints explicitly in the design prompt, or the design will optimize for the wrong objective.
+
+**Final merge authorization.** The review stage catches a lot. It does not catch everything. A human reads the final diff and signs off. That signature is not ceremony; it is accountability.
+
+## Recap
+
+Every development stage — explore, design, plan, TDD, implement, review, ship — admits meaningful delegation. The leverage is highest at the stages engineers most often skip: exploration before coding, review before merging, verification before shipping. Match model tier to reasoning difficulty: cheap models for mechanical gates, capable models for trade-off analysis and structural refactoring. Keep context clean with worktrees and session memory. Invest in a long, accurate CLAUDE.md and your per-prompt complexity drops to near zero.
+
+The next chapter covers dynamic workflows — JavaScript scripts that move orchestration logic entirely out of Claude's context window, enabling coordination at a scale where even the thin parent context described here would become unwieldy.

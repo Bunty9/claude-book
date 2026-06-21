@@ -1,0 +1,205 @@
+# Curated links
+
+This chapter is a durable index of the official docs, repos, registries, and community resources that matter for working with Claude Code and the MCP ecosystem. Every link here has been chosen because it stays current by design — maintained by Anthropic, the Linux Foundation, or the vendor that owns the project.
+
+Use this as a quick-reference tab to have open alongside your sessions, not something to read top-to-bottom. The deeper explanations live in the corresponding chapters.
+
+---
+
+## Official Claude Code documentation
+
+The primary source of truth for everything Claude Code. These pages are kept current with each release.
+
+| URL | What it covers |
+|---|---|
+| [code.claude.com/docs/en/changelog](https://code.claude.com/docs/en/changelog) | Release-by-release changelog — the fastest signal for new primitives |
+| [code.claude.com/docs/en/plugins](https://code.claude.com/docs/en/plugins) | Plugin architecture, manifest format, hooks, monitors, and installation flags |
+| [code.claude.com/docs/en/discover-plugins](https://code.claude.com/docs/en/discover-plugins) | Official and community marketplace browsing, context-cost preview, scoped installation |
+| [code.claude.com/docs/en/skills](https://code.claude.com/docs/en/skills) | Skills system: SKILL.md format, `$ARGUMENTS`, reload mechanics |
+| [code.claude.com/docs/en/sub-agents](https://code.claude.com/docs/en/sub-agents) | Custom sub-agent definitions, frontmatter fields, model selection |
+| [code.claude.com/docs/en/hooks](https://code.claude.com/docs/en/hooks) | Lifecycle hooks: PreToolUse, PostToolUse, SessionStart, SessionEnd, PreCompact, PostCompact |
+
+<Callout type="tip" title="Scan the changelog weekly">
+The changelog is where you learn about new primitives — `fallbackModel`, nested sub-agents, `post-session` hooks, `--safe-mode`. A five-minute weekly scan is the highest-value habit for keeping your workflows current. Filter for entries that mention `hook`, `agent`, `plugin`, `model`, or `fallback`. (Source: [code.claude.com/docs/en/changelog](https://code.claude.com/docs/en/changelog))
+</Callout>
+
+---
+
+## Official Anthropic GitHub repos
+
+These are the canonical, actively maintained repositories. Read before contributing or building on top.
+
+| Repo | Purpose |
+|---|---|
+| [github.com/anthropics/claude-code](https://github.com/anthropics/claude-code) | Official Claude Code CLI. The `plugins/` subtree contains demo plugins |
+| [github.com/anthropics/claude-plugins-official](https://github.com/anthropics/claude-plugins-official) | Official plugin marketplace source — 55+ curated plugins, browse `plugins/` for reference implementations |
+| [github.com/anthropics/claude-plugins-community](https://github.com/anthropics/claude-plugins-community) | Community marketplace — review-gated third-party plugins; add with `/plugin marketplace add anthropics/claude-plugins-community` |
+
+The `claude-plugins-official` repo's `plugins/` directory is worth reading even if you never build a plugin yourself — each subfolder is a well-structured example of how skills, hooks, and MCP configs combine inside a real manifest.
+
+---
+
+## MCP — protocol, SDKs, and registries
+
+### Protocol governance and documentation
+
+The Model Context Protocol is now governed by the Linux Foundation's Agentic AI Foundation (AAIF), with AWS, Anthropic, Google, Microsoft, OpenAI, and others as founding members. That governance structure makes MCP a safe long-term foundation: it is not Claude-specific, and ChatGPT, Cursor, Gemini, and VS Code Copilot all support it. (Source: [anthropic.com/news/donating-the-model-context-protocol](https://www.anthropic.com/news/donating-the-model-context-protocol-and-establishing-of-the-agentic-ai-foundation))
+
+| URL | What it covers |
+|---|---|
+| [modelcontextprotocol.io](https://modelcontextprotocol.io) | Protocol specification and conceptual overview |
+| [registry.modelcontextprotocol.io](https://registry.modelcontextprotocol.io) | AAIF-run official server registry (~2,000 servers, open API) |
+| [blog.modelcontextprotocol.io](https://blog.modelcontextprotocol.io) | Protocol announcements — where EMA stable status and new spec features are published |
+
+### SDKs — start here when building a server
+
+| Repo | Language |
+|---|---|
+| [github.com/modelcontextprotocol/typescript-sdk](https://github.com/modelcontextprotocol/typescript-sdk) | TypeScript / Node.js — the most widely used |
+| [github.com/modelcontextprotocol/python-sdk](https://github.com/modelcontextprotocol/python-sdk) | Python |
+
+If you are building a new MCP server, start with the official SDK for your language before looking at any third-party framework. These repos are the closest thing to a specification with runnable examples.
+
+### Reference server implementations
+
+Anthropic maintains seven actively developed reference servers in `modelcontextprotocol/servers`. Everything else that used to live there has been archived and moved to vendor ownership. These seven are the canonical read when you want to understand how a minimal, correct server is structured:
+
+```
+fetch               — web content → markdown conversion
+filesystem          — file ops with configurable access controls
+git                 — read, search, manipulate git repos
+memory              — knowledge-graph persistent memory
+time                — timezone queries and conversion
+sequential-thinking — dynamic problem-solving via thought sequences
+everything          — reference/test harness (prompts, resources, tools in one place)
+```
+
+([github.com/modelcontextprotocol/servers](https://github.com/modelcontextprotocol/servers))
+
+### Server registries and directories
+
+The MCP ecosystem has several directories, each with different strengths. Use the official plugin marketplace first; go to an external registry when you need something it does not cover.
+
+| Registry | Strength |
+|---|---|
+| [claude.com/plugins](https://claude.com/plugins) | Official marketplace — pre-configured, namespaced, context-cost preview included |
+| [pulsemcp.com/servers](https://www.pulsemcp.com/servers) | Broadest catalogue — daily-updated, roughly 1,000 new servers per month |
+| [smithery.ai](https://smithery.ai) | Hosted MCP infrastructure + usage metrics; smaller but has OAuth automation |
+| [registry.modelcontextprotocol.io](https://registry.modelcontextprotocol.io) | AAIF-run official registry — authoritative but not the most comprehensive |
+
+<Callout type="note" title="Search before you build">
+Before writing a custom MCP server for an integration you need, search PulseMCP and the official marketplace. Most common integrations already have a vendor-maintained server that is better tested than anything you would write from scratch in a day.
+</Callout>
+
+---
+
+## Explore the full ecosystem interactively
+
+The widget below covers plugins, MCP servers, skills, and community repos — filterable by type, use case, and recency. Use it to find resources matched to your stack without scrolling through long lists manually.
+
+<EcosystemExplorer />
+
+---
+
+## Community resources
+
+These three resources are worth bookmarking for different reasons.
+
+### Everything Claude Code (`rohitg00/awesome-claude-code-toolkit`)
+
+[github.com/rohitg00/awesome-claude-code-toolkit](https://github.com/rohitg00/awesome-claude-code-toolkit)
+
+The highest-activity community aggregation point as of mid-2026. A portable, version-controlled collection of agents, skills, commands, plugins, hooks, rules, MCP configs, and companion app listings. Browse the `skills/` and `agents/` directories when you want to see how others have solved a workflow problem before writing your own. (Source: [augmentcode.com/learn/everything-claude-code-github](https://www.augmentcode.com/learn/everything-claude-code-github))
+
+### Repomix (`yamadashy/repomix`)
+
+[github.com/yamadashy/repomix](https://github.com/yamadashy/repomix)
+
+Packs an entire repository into one AI-friendly file, optimized for dropping into context. Three ways to use it:
+
+```bash
+# CLI: produces a single packed file in the current directory
+npx repomix
+
+# Chrome extension: adds a "Pack" button to GitHub repo pages
+
+# MCP server: Claude can call repomix directly during a session
+# → mcpservers.org/servers/Aeolun/repomix-mcp
+```
+
+The MCP server form is the most convenient for agent workflows where a sub-agent needs to reason about a codebase without running `find` and `Read` across hundreds of files.
+
+### Awesome Claude Code (`hesreallyhim/awesome-claude-code`)
+
+[github.com/hesreallyhim/awesome-claude-code](https://github.com/hesreallyhim/awesome-claude-code)
+
+A curated index — not installable directly, but a well-organized catalogue covering skills, hooks, slash commands, agent orchestrators, applications, and plugins. Useful for discovery when you know the category of thing you want but not its name.
+
+---
+
+## Third-party aggregators and trackers
+
+These sites synthesize across the official sources. Use them for popularity signals and change digests, not as authoritative documentation.
+
+| Site | What it tracks |
+|---|---|
+| [claudemarketplaces.com](https://claudemarketplaces.com) | Daily-updated GitHub aggregation across skills, MCP, and plugins |
+| [claudefa.st](https://claudefa.st) | Running changelog digest and curated add-on catalog |
+| [mcpmanager.ai/blog/most-popular-mcp-servers](https://mcpmanager.ai/blog/most-popular-mcp-servers/) | Adoption statistics — the most-used MCP servers by actual usage count |
+
+A server with thousands of installs tracked on these sites has been tested in ways that a newly-published one has not. When you are choosing between two servers that appear to do the same thing, adoption data is a meaningful signal.
+
+---
+
+## Quickstart command map
+
+A condensed reference for the commands you will reach for most often when managing the ecosystem.
+
+```bash
+# Discover and install
+/plugin                                         # open marketplace browser
+claude.com/plugins                              # browse online alternative
+
+/plugin install security-guidance@claude-plugins-official
+/plugin install github@claude-plugins-official
+/plugin install typescript-lsp@claude-plugins-official
+/plugin marketplace add anthropics/claude-plugins-community
+
+# Inspect what's installed
+/plugin list --enabled
+/plugin list --disabled
+
+# Create a plugin from scratch
+claude plugin init my-plugin                    # scaffolds under ~/.claude/skills/
+
+# Reload after editing a skill or hook
+/reload-plugins
+
+# Debug an MCP connection
+/mcp                                            # list servers, status, exposed tools
+```
+
+<Callout type="warning" title="Every installed plugin costs context on every turn">
+Each plugin — especially those that bundle MCP servers or background monitors — adds to your context window regardless of whether you invoke it. Run `/plugin list --enabled` periodically and uninstall anything you have not actively used in the past month. Context overhead is the main reason responses slow down as a Claude Code setup matures. (Source: [code.claude.com/docs/en/discover-plugins](https://code.claude.com/docs/en/discover-plugins))
+</Callout>
+
+---
+
+## How to read these links as a beginner
+
+If you are new to Claude Code, the ordering that works best is:
+
+1. Start with [code.claude.com/docs/en/plugins](https://code.claude.com/docs/en/plugins) to understand the mental model — what a plugin is, what a skill is, and how they relate.
+2. Open [claude.com/plugins](https://claude.com/plugins) and install one workflow plugin that matches something you do repeatedly. `commit-commands` is a safe first choice.
+3. Bookmark the changelog and check it once a week — just the entries from the past seven days.
+4. Once you are comfortable with plugins, look at PulseMCP for MCP server discovery when a new integration comes up.
+
+You do not need to explore everything at once. The ecosystem grows continuously; a targeted, weekly habit beats a one-time deep survey.
+
+---
+
+## Recap
+
+The load-bearing sources: the Claude Code changelog for CLI changes, `claude.com/plugins` for the official marketplace, `modelcontextprotocol.io` and its SDK repos for building servers, and PulseMCP for discovery. The community resources — Everything Claude Code, Repomix, and the awesome-claude-code index — fill the gap between official documentation and practical patterns. The `EcosystemExplorer` widget above lets you search across all of these filtered by type and use case.
+
+**You have reached the end of the reference section.** Return to any chapter via the table of contents, or use the ecosystem explorer to find the next thing worth trying.

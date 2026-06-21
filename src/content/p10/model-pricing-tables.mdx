@@ -1,0 +1,65 @@
+# Model & pricing cheat tables
+
+Quick-reference tables for Claude model ids, capabilities, context windows, and pricing. Use these to make fast model-selection decisions without leaving your workflow.
+
+<Callout type="tip" title="Prices change">
+Anthropic updates pricing periodically. Always verify current rates at console.anthropic.com/settings/billing before committing to a production budget.
+</Callout>
+
+## The Claude model family
+
+| Model id | Tier | Context window | Modalities | Best for |
+|---|---|---|---|---|
+| `claude-opus-4-5` | Opus | 200 k tokens | Text, image, tool use | Hardest reasoning, long-horizon agents |
+| `claude-sonnet-4-5` | Sonnet | 200 k tokens | Text, image, tool use | Balanced quality and speed |
+| `claude-haiku-3-5` | Haiku | 200 k tokens | Text, image, tool use | High-volume, latency-sensitive tasks |
+
+<Callout type="note" title="Model id format">
+Anthropic model ids follow the pattern `claude-{tier}-{version}` (e.g. `claude-sonnet-4-5`). The table above shows one generation; Anthropic releases new versions regularly — check the API docs for the latest ids. Claude Code defaults to the latest recommended Sonnet unless you override `model` in settings.json or pass `--model` on the CLI.
+</Callout>
+
+## Pricing snapshot
+
+All prices are per million tokens (MTok) at time of writing. Input includes prompt + context; output is generated tokens only.
+
+| Model | Input (per MTok) | Output (per MTok) | Cache write (per MTok) | Cache read (per MTok) |
+|---|---|---|---|---|
+| claude-opus-4-5 | $15.00 | $75.00 | $18.75 | $1.50 |
+| claude-sonnet-4-5 | $3.00 | $15.00 | $3.75 | $0.30 |
+| claude-haiku-3-5 | $0.80 | $4.00 | $1.00 | $0.08 |
+
+<Callout type="warning" title="Cache pricing requires explicit use">
+Prompt-caching savings only apply when you explicitly use the cache-control breakpoints in your API calls. Claude Code uses caching automatically for system-prompt content; direct API callers must opt in.
+</Callout>
+
+## Cost-tiering quick guide
+
+Use the table below alongside the [Cost-tiering chapter](/c/cost-tiering) to match model to task.
+
+| Task type | Recommended tier | Reason |
+|---|---|---|
+| Exploration, brainstorm, first drafts | Haiku | Cheap, fast, good enough for idea generation |
+| Code generation, refactor, standard tasks | Sonnet | Strong quality at moderate cost |
+| Architectural review, complex reasoning | Opus | Maximum capability when correctness matters most |
+| CI lint / quick checks | Haiku | Runs many times; savings compound |
+| Final code-review pass | Sonnet or Opus | Stakes are higher; invest accordingly |
+
+<Callout type="note" title="Token estimation rule of thumb">
+Roughly 1 token ≈ 4 characters of English text. A 200 k context window holds approximately 150 000 words — about the length of a long novel — though code and structured data skew higher per token.
+</Callout>
+
+## Interactive token estimator
+
+<Tokenizer />
+
+## Context window budget at a glance
+
+| Slot | Typical size | Notes |
+|---|---|---|
+| System prompt (CLAUDE.md + injected) | 2 k – 20 k | Cached by Claude Code automatically |
+| Conversation history | Grows with turns | Compacted when near limit |
+| File content injected via Read | Varies | Large files consume budget fast |
+| Tool results | 0.5 k – 5 k per call | Each tool call + result adds to context |
+| Output reservation | ~8 k | Reserved for the model's response |
+
+See the [Context window chapter](/c/context-window-budget) for the full budget breakdown and the [Compaction chapter](/c/compaction-autocompact) for techniques to stay within it.

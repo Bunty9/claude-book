@@ -1,0 +1,100 @@
+# The chat loop
+
+Every interaction with Claude — whether you type a question in a chat window or call the API from code — follows the same underlying rhythm. By the end of this chapter you will be able to picture exactly what happens between the moment you hit send and the moment Claude's words appear, and you will know what levers you can pull to shape that exchange.
+
+## What actually happens when you send a message
+
+A conversation with Claude is a series of **turns**. Each turn has the same basic shape:
+
+1. You send a **prompt** — your input for this round.
+2. Claude reads the full context (everything said so far, plus your new message).
+3. Claude generates a **response**, token by token, until it decides it is done.
+4. That response is added to the shared context, and the cycle is ready for your next message.
+
+<Mermaid chart={`sequenceDiagram
+    participant You
+    participant Context as Shared context
+    participant Claude
+
+    You->>Context: Add user message
+    Context->>Claude: Full conversation so far
+    Claude->>Context: Add assistant response
+    Context-->>You: Stream / return response
+    Note over Context: Context grows with each turn
+`} />
+
+This is often called the **chat loop** — though "loop" understates it slightly, because each trip around picks up everything that came before. The context is append-only: messages accumulate, and Claude sees all of them every time.
+
+## The prompt: your side of the conversation
+
+A prompt is simply the text you send for one turn. It can be a question, an instruction, a chunk of data, a code snippet, or all of the above combined. There is no magic format — Claude interprets plain language.
+
+That said, a few qualities consistently produce better results:
+
+- **Be specific about what you want.** "Summarize this in three bullet points for a non-technical reader" beats "summarize this."
+- **Provide relevant context upfront.** Claude cannot go looking for information that is not in the conversation — anything it needs must be in the prompt.
+- **State the shape of the answer.** If you want a table, a numbered list, or a short paragraph, say so.
+
+You don't need to follow a rigid template. Think of it like briefing a capable colleague: the clearer your brief, the less back-and-forth you need.
+
+### System prompts
+
+In the API (and in most Claude-powered products), there is a special slot called the **system prompt** that appears before the conversation begins. It is not part of the back-and-forth — it is more like standing instructions that apply for the whole session: a persona, a set of rules, a context that the assistant should always keep in mind.
+
+When you use Claude through a product or integration, the system prompt is usually set by that product. When you call the API directly, you control it. Either way, it is just more text that lands in the context before your first message.
+
+## Reading the response
+
+Claude's response arrives as a stream of tokens — the same next-token prediction described in the previous chapter. The practical consequence is that you often see words appearing progressively rather than all at once, especially for longer answers.
+
+A response can contain:
+
+- **Plain prose** — explanations, analysis, creative writing.
+- **Structured text** — markdown tables, numbered lists, fenced code blocks.
+- **Multiple distinct sections** — Claude will naturally break longer answers into headed sections when that aids clarity.
+
+<Callout type="tip" title="Shorter prompts do not always get shorter responses">
+Claude calibrates response length to the complexity of the request. A simple factual question gets a concise answer. A multi-part technical question gets a detailed one. If you need brevity, ask for it explicitly: "in one paragraph" or "in under 50 words."
+</Callout>
+
+## How context accumulates across turns
+
+After the first exchange, every subsequent turn includes the full prior history. Claude does not just remember your previous message — it sees the entire transcript from the start of the session. This is what makes multi-turn conversations coherent: Claude can refer back to anything said earlier without you repeating yourself.
+
+The practical implication is that **context is cumulative and finite**. Claude models have a context window measured in tokens — a hard ceiling on how much text can be in play at once. Within a session you are steadily spending that budget. Very long conversations can eventually exhaust that budget; depending on the product or API setting, older content may be summarised and compacted, or simply unavailable, once the limit is approached.
+
+<Callout type="note" title="Each new session starts blank">
+There is no memory between separate conversations unless a product explicitly saves and re-injects it. If you close a chat and open a new one, Claude has no knowledge of what you discussed before. Continuity within a session is real; continuity across sessions requires explicit handling.
+</Callout>
+
+## A minimal example
+
+Here is the structure of a two-turn exchange expressed the way the API sees it — no special syntax required, just roles and content:
+
+```json
+[
+  { "role": "user",      "content": "What is a context window?" },
+  { "role": "assistant", "content": "A context window is the total amount of text..." },
+  { "role": "user",      "content": "How does it affect very long conversations?" }
+]
+```
+
+When Claude processes that last message, it reads all three entries. Its response will be consistent with what it said in the middle entry, without you having to re-explain anything.
+
+## What determines response quality?
+
+Three things have the most leverage:
+
+| Factor | What to do |
+|---|---|
+| **Clarity of intent** | State what you want and why |
+| **Context in the prompt** | Include relevant background; don't assume Claude knows |
+| **Iteration** | Treat the first response as a draft; follow up to refine |
+
+The chat loop is designed for iteration. If Claude misunderstands, clarify in the next turn rather than restarting from scratch — the prior exchange is part of the context and can itself inform the correction.
+
+## Recap
+
+A chat loop is: you send a prompt → Claude reads the accumulated context → Claude responds → the response joins the context → repeat. The context is append-only and finite. System prompts set standing instructions before the conversation begins. Response quality is driven by prompt clarity, available context, and willingness to iterate.
+
+In the next chapter we look at **how to write prompts that get reliable results** — moving from the mechanics of the loop to the craft of shaping what comes out of it.

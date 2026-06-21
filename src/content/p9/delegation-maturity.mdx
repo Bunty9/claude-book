@@ -1,0 +1,147 @@
+# Delegation maturity
+
+Handing a task to Claude is easy. Knowing *which* tasks to hand off, how much rope to give, how to verify the result without undoing the time savings — that is where most practitioners stall. This chapter gives you a practical model for trust, verification, and the things that should stay in your hands no matter how fluent you get with delegation.
+
+## The delegation spectrum
+
+Not all tasks are equally safe to delegate. The mistake most people make early on is treating delegation as binary — either Claude does it autonomously or you do it yourself. In practice, there is a spectrum, and your job is to place each task at the right point on it.
+
+<Mermaid chart={`flowchart LR
+    A["You do it\n(fully manual)"] --> B["You drive,\nClaude assists"]
+    B --> C["Claude drafts,\nyou approve"]
+    C --> D["Claude acts,\nyou review output"]
+    D --> E["Claude acts\nautonomously"]
+
+    style A fill:var(--color-bg-subtle),color:var(--color-fg)
+    style B fill:var(--color-tip),color:#fff
+    style C fill:var(--color-tip),color:#fff
+    style D fill:var(--color-accent),color:#fff
+    style E fill:var(--color-danger),color:#fff
+`} />
+
+The leftmost position costs the most of your time. The rightmost costs the most trust. Maturity is the ability to move tasks rightward safely — and to recognise when a task belongs on the left regardless of how good the tooling gets.
+
+### What belongs on the right
+
+Tasks that delegate well share a cluster of properties:
+
+- **Reversible.** If the output is wrong, you can undo it cheaply. Code that fails review gets revised. A drafted email that is not sent costs nothing. A generated test that catches nothing gets deleted.
+- **Verifiable.** You have a way to check correctness without re-doing the work. "Does the test suite pass?" is a verification. "Does this prose feel right?" is not.
+- **Well-scoped.** The task has a boundary. "Fix the authentication bug in the login handler" is scoped. "Make the auth system better" is not.
+- **Repeatable.** Tasks you have done manually at least once are safer to delegate because you know what correct looks like.
+
+### What belongs on the left
+
+Some things should stay in your hands not because Claude will necessarily do them badly, but because the cost of a mistake is asymmetric:
+
+- **Decisions that are hard to undo.** Merging to a protected branch, deleting production data, promoting a breaking schema change. Even with a capable agent, keep your hand on the trigger for anything with a high reversal cost.
+- **Judgment calls about people.** Firing, hiring, escalating a sensitive client complaint. These require human accountability.
+- **Decisions where the reasoning matters as much as the outcome.** Architecture choices that will shape the codebase for years are worth thinking through yourself — not because Claude cannot reason about them, but because going through the reasoning yourself is how you build the model that lets you review and correct the next ten decisions.
+- **Anything where you cannot verify the output.** If you have no way to check whether Claude did the right thing, you have no feedback loop. Without a feedback loop, errors compound silently.
+
+<Callout type="warning" title="The verification trap">
+The biggest failure mode in autonomous delegation is removing the verification step to save time. If Claude generates a database migration and you ship it without running it against a production snapshot, you have not saved work — you have deferred a potentially catastrophic incident. The time saved on generation is real; the time lost on a prod outage is also real, and much larger. Keep verification, always.
+</Callout>
+
+## Trust is earned by tasks, not by sessions
+
+A common misconception: "I've been using Claude for months, so I can trust it more now." Trust in delegation is not a global property you accumulate — it is per-task-type, earned by evidence.
+
+The right question is not "do I trust Claude?" but "has this *class of task* been reliable enough, often enough, that the expected cost of an error is lower than the cost of doing it manually?"
+
+That means tracking, at least informally, which task types have a clean track record and which have surprised you. A useful mental bucket system:
+
+| Bucket | What it means | Your posture |
+|---|---|---|
+| **Proven** | This task type has worked correctly many times; errors are rare and cheap | Delegate autonomously; spot-check occasionally |
+| **Learning** | You have delegated this a few times; results are usually good but occasionally off | Delegate with review gate; inspect outputs before acting |
+| **Unproven** | First time delegating this class of task | Delegate with full verification; compare against a manual attempt |
+| **Off-limits** | Errors are too costly or unverifiable | Do not delegate autonomously; use Claude in assist mode only |
+
+This is not a permanent classification. A task type moves from Unproven to Learning to Proven as evidence accumulates. It also moves back — if a refactor you thought was Proven starts generating subtle correctness bugs, demote it.
+
+## The structure of a good autonomous delegation
+
+When you decide a task belongs in the autonomous zone, the prompt structure matters more than it does for simple assist-mode interactions. A well-structured autonomous delegation has four parts:
+
+```
+1. GOAL         — what done looks like (outcome, not steps)
+2. CONSTRAINTS  — what must stay true (invariants, style rules, scope limits)
+3. CONTEXT      — where the relevant code/docs/state lives
+4. VERIFICATION — how you will check correctness before acting on the output
+```
+
+In practice this does not have to be a formal template — but all four elements need to be present, either in the prompt or in a standing document like `CLAUDE.md` that Claude already has.
+
+The pattern observed in high-output professional usage (see [F-33]) is terse goal-oriented prompts *because* the standing documents carry the constraint and context load. Short prompts work at scale only when the durable context is rich.
+
+<Callout type="tip" title="Invest in standing context, not per-prompt context">
+A detailed `CLAUDE.md` is leverage. Every hour you spend writing it down is paid back across every future session. The alternative — repeating constraints in every prompt — scales poorly and introduces inconsistency. Once your standing context is solid, prompts can shrink to a goal and a flag.
+</Callout>
+
+## Verification that does not cancel the gains
+
+Verification has to be lightweight enough that it does not eat the time saved by delegation. Here is a tiered approach based on reversal cost:
+
+### Tier 1 — Automated gate (zero marginal cost)
+
+The best verification is one that runs itself. If the task produces code, a passing test suite is a verification. If the task modifies data, a count check or diff is a verification. Invest in automated gates for tasks you plan to delegate repeatedly.
+
+From the audit remediation case study [F-14]: a 123-finding security audit was remediated across 10 PRs in roughly 2 days using a 5-stage pipeline where a cheap model handled mechanical gate checks (test count, diff coverage, regression detection). The verification cost was near-zero because it was automated and run by a model rather than a human reviewer.
+
+### Tier 2 — Sample review (low marginal cost)
+
+For tasks where automated gates are not feasible, review a representative sample rather than the full output. If Claude refactored 40 functions, inspect 5 chosen at random plus any that the test suite flagged. The key insight is that your review serves two purposes: catching errors in this output, and calibrating your trust model for next time.
+
+### Tier 3 — Full review (high marginal cost, reserved for high-stakes)
+
+For irreversible actions — production schema changes, billing integrations, security-critical paths — review the full output before it executes. This is the same standard you would apply to a pull request from a junior engineer on their first week. The delegation still saves time on generation; it does not skip judgment on correctness.
+
+### The dynamic roles lesson
+
+A concrete example of Tier 3 paying off: after implementing a large RBAC feature across two repos, an 8-agent review pass caught 7 critical and 11 high bugs before merge [F-16]. One of them was a synchronous JWT verification call inside an async socket handler that would cause an uncaught exception and process crash every ~12 minutes in production. Another was a hardcoded action list that silently dropped 4 new actions, hiding the role management UI from all users including super-admins. Neither would have been caught without a dedicated review pass before merge — automated tests and static analysis did not surface either.
+
+The lesson is not that Claude makes mistakes — it is that any complex enough output, from any source, needs a commensurate review gate. The review gate scales with the blast radius, not with your trust in the generator.
+
+## What to keep in your own hands
+
+As you scale delegation, three categories should stay with you regardless of how capable the tooling becomes.
+
+### Architectural judgment
+
+Claude can model a system, propose a design, and implement it. What it cannot do is carry the long-term accountability for whether that design ages well. When a decision will shape how a team works for the next two years, think it through yourself — then use Claude to pressure-test your reasoning.
+
+A useful pattern: delegate to Claude first, then compare its proposal to your own thinking. Where they diverge is where the interesting decision lives.
+
+### Knowing what you do not know
+
+Claude will produce a confident-sounding output even when the problem is genuinely ambiguous. The experienced practitioner's job is to notice when a task is harder than it looks — more edge cases, more stakeholder sensitivities, more unknown unknowns — and pull back to assist mode before the autonomous run goes too far.
+
+This skill does not come from prompting — it comes from domain knowledge about the task itself. Domain knowledge cannot be delegated.
+
+### The "what is this actually for?" question
+
+The highest-leverage thing you can do before any delegation is answer the question: what is this output actually going to be used for, and what does failure look like? A first draft of a report that will be lightly skimmed is different from a first draft that will go to a board. Code that will run in a sandbox is different from code that will touch a billing system.
+
+Claude does not know the downstream consequences of its outputs unless you tell it. You do know. That knowledge is yours to apply.
+
+## Growing into full autonomy: a progression
+
+Delegation maturity is not a destination — it is a practice you refine over time. A reasonable progression:
+
+1. **Assist mode** — Use Claude reactively. You drive; Claude fills in details, drafts, suggests. Good for learning what Claude is capable of.
+2. **Reviewed delegation** — Hand off bounded tasks; review outputs before acting. Build your per-task-type evidence base.
+3. **Gated autonomy** — Claude acts autonomously; automated gates verify before results land anywhere consequential. You review failures, not successes.
+4. **Structured campaigns** — Multi-agent, multi-session work with SOPs, worktrees, and staged verification. The output cadence at this level is substantially higher than any individual could sustain manually [F-32].
+
+Most practitioners plateau at stage 2 or 3. Stage 4 requires investment in the standing infrastructure: rich `CLAUDE.md`, automated gates, disciplined memory management, and explicit protocols for parallel work. That investment compounds — it makes every future session more effective.
+
+<Callout type="note" title="The trust paradox">
+The more infrastructure you build around autonomous delegation — automated gates, standing context docs, memory systems — the less you need to trust any individual output, and the more safely you can delegate. Trust and verification are complements, not substitutes. Building better verification unlocks wider delegation, not less.
+</Callout>
+
+## Recap
+
+Delegation maturity is the ability to place each task at the right point on the manual-to-autonomous spectrum, verify outputs proportionally to their reversal cost, and hold onto the judgment calls that no tool should make for you. Trust is earned per task type, not globally. Verification is not optional — but it can be made cheap through automation. The things that stay in your hands are architectural judgment, domain knowledge, and understanding what failure looks like downstream.
+
+**Next:** the following chapter covers the full power-user stack — memory systems, hooks, and session discipline — the infrastructure layer that makes high-output autonomous delegation sustainable over weeks and months.
