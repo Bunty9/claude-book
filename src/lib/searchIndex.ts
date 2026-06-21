@@ -39,7 +39,3 @@ export function search(index: MiniSearch, query: string): SearchHit[] {
     score: r.score,
   }))
 }
-
-export function loadIndexFromJson(json: { docs: SearchDoc[] }): MiniSearch {
-  return buildIndex(json.docs)
-}

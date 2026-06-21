@@ -8,13 +8,18 @@ describe('manifest invariants', () => {
   })
   it('each track order is contiguous starting at 1', () => {
     for (const t of tracks) {
-      const orders = chaptersForTrack(t).map(c => c.tracks[t]!).sort((a, b) => a - b)
+      const orders = chaptersForTrack(t)
+        .map(c => c.tracks[t])
+        .filter((n): n is number => n !== undefined)
+        .sort((a, b) => a - b)
       orders.forEach((o, i) => expect(o).toBe(i + 1))
     }
   })
   it('chaptersForTrack is sorted ascending by that track order', () => {
     for (const t of tracks) {
-      const seq = chaptersForTrack(t).map(c => c.tracks[t]!)
+      const seq = chaptersForTrack(t)
+        .map(c => c.tracks[t])
+        .filter((n): n is number => n !== undefined)
       const sorted = [...seq].sort((a, b) => a - b)
       expect(seq).toEqual(sorted)
     }

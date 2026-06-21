@@ -4,6 +4,7 @@ import React from 'react'
 import { Sidebar } from '@/components/shell/Sidebar'
 import { TableOfContents } from '@/components/shell/TableOfContents'
 import { SearchPalette, useSearchPalette } from '@/components/shell/SearchPalette'
+import { ThemeToggle } from '@/components/shell/ThemeToggle'
 
 function BookLayoutInner({ children }: { children: React.ReactNode }) {
   const { open, setOpen } = useSearchPalette()
@@ -11,9 +12,14 @@ function BookLayoutInner({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex min-h-screen">
       <Sidebar onOpenSearch={() => setOpen(true)} />
-      <main className="flex-1 min-w-0 px-6 py-8 max-w-prose mx-auto">
-        {children}
-      </main>
+      <div className="flex-1 flex flex-col min-w-0">
+        <div className="flex justify-end px-4 pt-4">
+          <ThemeToggle />
+        </div>
+        <main className="flex-1 px-6 py-4 max-w-prose mx-auto w-full">
+          {children}
+        </main>
+      </div>
       <aside className="hidden xl:block w-56 shrink-0 px-4 py-8">
         <TableOfContents />
       </aside>

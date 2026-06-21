@@ -9,6 +9,7 @@ import { isDone } from '@/lib/progress'
 import { TrackId, PartId } from '@/content/types'
 import { PART_LABELS } from '@/content/parts'
 import { ProgressBadge } from './ProgressBadge'
+import { useMounted } from '@/lib/useMounted'
 
 const TRACKS: TrackId[] = ['beginner', 'engineer', 'automator']
 
@@ -20,6 +21,7 @@ export function Sidebar({ onOpenSearch }: SidebarProps) {
   const { track, setTrack } = useTrack()
   const pathname = usePathname()
   const [open, setOpen] = useState(false)
+  const mounted = useMounted()
   const chapters = chaptersForTrack(track)
 
   // Group by part, preserving track order
@@ -44,7 +46,7 @@ export function Sidebar({ onOpenSearch }: SidebarProps) {
               onClick={() => setTrack(t)}
               className={[
                 'flex-1 text-xs py-1 px-2 rounded capitalize transition-colors',
-                t === track
+                t === (mounted ? track : 'beginner')
                   ? 'bg-accent text-accent-fg'
                   : 'text-fg-muted hover:text-fg hover:bg-bg-elevated',
               ].join(' ')}
@@ -78,7 +80,7 @@ export function Sidebar({ onOpenSearch }: SidebarProps) {
               {chs.map(ch => {
                 const href = `/c/${ch.id}`
                 const isActive = pathname === href
-                const done = isDone(ch.id)
+                const done = mounted && isDone(ch.id)
                 return (
                   <li key={ch.id}>
                     <Link

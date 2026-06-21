@@ -4,6 +4,7 @@ import { chapters, chapterById } from '@/content/manifest'
 import { Breadcrumbs } from '@/components/shell/Breadcrumbs'
 import { PrevNext } from '@/components/shell/PrevNext'
 import { MarkDoneButton } from './MarkDoneButton'
+import { CHAPTERS_MDX } from './chapterMdxRegistry'
 
 // ---------------------------------------------------------------------------
 // Static params
@@ -14,17 +15,6 @@ export function generateStaticParams(): { id: string }[] {
 }
 
 export const dynamicParams = false
-
-// ---------------------------------------------------------------------------
-// Explicit map of chapter id → lazy MDX module factory.
-// Add an entry here when a new chapter MDX file is authored.
-// Keeping this explicit (not a template-literal import) lets Next's static
-// export bundler analyse all branches at build time.
-// ---------------------------------------------------------------------------
-
-const CHAPTERS_MDX: Record<string, () => Promise<{ default: React.ComponentType }>> = {
-  'what-is-an-llm': () => import('@/content/p0/what-is-an-llm.mdx'),
-}
 
 // ---------------------------------------------------------------------------
 // Coming-soon placeholder

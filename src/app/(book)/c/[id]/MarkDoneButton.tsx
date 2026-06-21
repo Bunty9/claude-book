@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { markDone, unmarkDone, isDone } from '@/lib/progress'
 
 interface MarkDoneButtonProps {
@@ -8,9 +8,13 @@ interface MarkDoneButtonProps {
 }
 
 export function MarkDoneButton({ id }: MarkDoneButtonProps) {
-  // Lazy initializer: reads localStorage once on mount (client only).
-  // isDone already guards typeof window === 'undefined' and returns false SSR.
-  const [done, setDone] = useState(() => isDone(id))
+  // Start with false (matches SSR), then sync from localStorage after mount.
+  const [done, setDone] = useState(false)
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setDone(isDone(id))
+  }, [id])
 
   function toggle() {
     if (done) {

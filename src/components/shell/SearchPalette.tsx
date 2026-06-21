@@ -21,8 +21,12 @@ let cachedIndex: MiniSearch | null = null
 async function getIndex(): Promise<MiniSearch> {
   if (cachedIndex !== null) return cachedIndex
   const docs = await loadSearchDocs()
-  cachedIndex = buildIndex(docs)
-  return cachedIndex
+  const idx = buildIndex(docs)
+  // Only cache if at least one doc has a non-empty body (i.e., fetch succeeded)
+  if (docs.some(d => d.body.length > 0)) {
+    cachedIndex = idx
+  }
+  return idx
 }
 
 // ---------------------------------------------------------------------------
