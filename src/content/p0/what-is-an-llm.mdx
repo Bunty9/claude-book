@@ -6,7 +6,7 @@ Understanding that core mechanic is the foundation for using Claude effectively.
 
 ## Tokens: the atoms of language
 
-LLMs don't read text the way you do, word by word. They work with **tokens** — sub-word fragments that are a sort of compression artifact from the training process. Common short words are usually single tokens. Longer or rarer words often get split: "tokenization" might become `token`, `ization`. Punctuation, whitespace, and numbers each have their own patterns.
+LLMs don't read text the way you do, word by word. They work with **tokens** — sub-word fragments from a vocabulary built by analyzing a large text corpus before training begins. The tokenizer is a separate preprocessing step, distinct from learning the model's weights. Common short words are usually single tokens. Longer or rarer words often get split: "tokenization" might become `token`, `ization`. Punctuation, whitespace, and numbers each have their own patterns.
 
 A rough rule of thumb: one token is about ¾ of an English word, or roughly 4 characters.
 

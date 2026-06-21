@@ -11,10 +11,10 @@ const DEFAULT_TEXT =
 
 /** Formats a USD amount to a readable string. */
 function formatUsd(amount: number): string {
-  if (amount < 0.000001) return '$0.000000'
-  if (amount < 0.001) return `$${amount.toFixed(6)}`
+  if (amount === 0) return '$0'
   if (amount < 0.01) return `$${amount.toFixed(4)}`
-  return `$${amount.toFixed(4)}`
+  if (amount < 1) return `$${amount.toFixed(3)}`
+  return `$${amount.toFixed(2)}`
 }
 
 export function Tokenizer() {

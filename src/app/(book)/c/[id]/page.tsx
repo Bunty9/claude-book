@@ -17,11 +17,9 @@ export const dynamicParams = false
 
 // ---------------------------------------------------------------------------
 // Explicit map of chapter id → lazy MDX module factory.
-// Add an entry when a new chapter MDX file is created (Task 0.10+).
+// Add an entry here when a new chapter MDX file is authored.
 // Keeping this explicit (not a template-literal import) lets Next's static
 // export bundler analyse all branches at build time.
-//
-// Currently empty — what-is-an-llm.mdx is authored in Task 0.10.
 // ---------------------------------------------------------------------------
 
 const CHAPTERS_MDX: Record<string, () => Promise<{ default: React.ComponentType }>> = {
