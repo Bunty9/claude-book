@@ -45,7 +45,7 @@ The file is plain JSON. All keys are optional — you only need the keys you act
 
 ```json
 {
-  "model": "claude-sonnet-4-5",
+  "model": "claude-sonnet-4-6",
   "effortLevel": "high",
   "permissions": {
     "allow": [
@@ -149,7 +149,7 @@ To make layering concrete, consider what happens when Claude Code resolves the `
 <Mermaid chart={`flowchart LR
     A["Managed settings\nmodel: claude-opus-4"] -->|wins| RESULT["Effective model:\nclaude-opus-4"]
     B["CLI: --model claude-haiku-4"] -->|overridden| A
-    C[".claude/settings.local.json\nmodel: claude-sonnet-4-5"] -->|overridden| B
+    C[".claude/settings.local.json\nmodel: claude-sonnet-4-6"] -->|overridden| B
     D[".claude/settings.json\nno model key"] -->|overridden| C
     E["~/.claude/settings.json\nmodel: claude-haiku-4"] -->|overridden| D
 

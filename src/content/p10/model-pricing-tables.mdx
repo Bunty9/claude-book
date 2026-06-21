@@ -10,27 +10,37 @@ Anthropic updates pricing periodically. Always verify current rates at console.a
 
 | Model id | Tier | Context window | Modalities | Best for |
 |---|---|---|---|---|
-| `claude-opus-4-5` | Opus | 200 k tokens | Text, image, tool use | Hardest reasoning, long-horizon agents |
-| `claude-sonnet-4-5` | Sonnet | 200 k tokens | Text, image, tool use | Balanced quality and speed |
-| `claude-haiku-3-5` | Haiku | 200 k tokens | Text, image, tool use | High-volume, latency-sensitive tasks |
+| `claude-fable-5` | Fable | 1M tokens | Text, image, tool use | Frontier reasoning, the largest jobs |
+| `claude-opus-4-8` | Opus | 1M tokens | Text, image, tool use | Hardest reasoning, long-horizon agents |
+| `claude-sonnet-4-6` | Sonnet | 1M tokens | Text, image, tool use | Balanced quality and speed — the everyday default |
+| `claude-haiku-4-5` | Haiku | 200 k tokens | Text, image, tool use | High-volume, latency-sensitive tasks |
 
 <Callout type="note" title="Model id format">
-Anthropic model ids follow the pattern `claude-{tier}-{version}` (e.g. `claude-sonnet-4-5`). The table above shows one generation; Anthropic releases new versions regularly — check the API docs for the latest ids. Claude Code defaults to the latest recommended Sonnet unless you override `model` in settings.json or pass `--model` on the CLI.
+Anthropic model ids follow the pattern `claude-{tier}-{version}` (e.g. `claude-sonnet-4-6`). New versions ship regularly and older ids are deprecated then retired — always confirm the current id list in the [models overview](https://platform.claude.com/docs/en/about-claude/models/overview). Claude Code defaults to a recommended Sonnet unless you override `model` in `settings.json` or pass `--model` on the CLI. Opus 4.7 and later use a new tokenizer that can spend up to ~35% more tokens on the same text, so budget by tokens, not by characters, when you switch tiers.
 </Callout>
 
 ## Pricing snapshot
 
-All prices are per million tokens (MTok) at time of writing. Input includes prompt + context; output is generated tokens only.
+All prices are USD per million tokens (MTok), verified against the [official pricing page](https://platform.claude.com/docs/en/about-claude/pricing) on 2026-06-21. Input includes prompt + context; output is generated tokens only. Cache columns use Anthropic's multipliers: a 5-minute cache write is 1.25× base input, a 1-hour write is 2× base input, and a cache read (hit) is 0.1× base input.
 
-| Model | Input (per MTok) | Output (per MTok) | Cache write (per MTok) | Cache read (per MTok) |
-|---|---|---|---|---|
-| claude-opus-4-5 | $15.00 | $75.00 | $18.75 | $1.50 |
-| claude-sonnet-4-5 | $3.00 | $15.00 | $3.75 | $0.30 |
-| claude-haiku-3-5 | $0.80 | $4.00 | $1.00 | $0.08 |
+| Model | Input | Output | 5m cache write | 1h cache write | Cache read |
+|---|---|---|---|---|---|
+| claude-fable-5 | $10.00 | $50.00 | $12.50 | $20.00 | $1.00 |
+| claude-opus-4-8 | $5.00 | $25.00 | $6.25 | $10.00 | $0.50 |
+| claude-sonnet-4-6 | $3.00 | $15.00 | $3.75 | $6.00 | $0.30 |
+| claude-haiku-4-5 | $1.00 | $5.00 | $1.25 | $2.00 | $0.10 |
 
-<Callout type="warning" title="Cache pricing requires explicit use">
-Prompt-caching savings only apply when you explicitly use the cache-control breakpoints in your API calls. Claude Code uses caching automatically for system-prompt content; direct API callers must opt in.
+<Callout type="warning" title="Verify before you budget">
+These are list prices on a single date. Anthropic changes pricing and ships new models often; deprecated/retired ids keep their old rates. Always reconfirm current rates at [claude.com/pricing](https://claude.com/pricing) before committing to a production budget. Full sourcing: `docs/research/packet-C-models-pricing.md`.
 </Callout>
+
+## Discounts and premiums
+
+- **Batch API** — asynchronous processing at a flat **50% off** both input and output. Use it for anything not latency-sensitive (backfills, evals, bulk classification).
+- **Prompt caching** — a cache read costs 10% of base input. A 5-minute cache pays for itself after one reuse; a 1-hour cache after two. Claude Code caches system-prompt content automatically; direct API callers opt in with `cache_control` breakpoints.
+- **1M-token context** — Fable 5, Opus 4.8/4.7/4.6, and Sonnet 4.6 include the full 1M window at standard per-token pricing (a 900k-token request bills at the same rate as a 9k one). This 1M context can require credits to be enabled on your account.
+- **Fast mode** (research preview, Opus only) — faster output at a premium: Opus 4.8 at $10 / $50 per MTok, Opus 4.6–4.7 at $30 / $150. Not available with the Batch API.
+- **US-only data residency** (`inference_geo: "us"`, Opus 4.6 / Sonnet 4.6 and later) — a 1.1× multiplier on every token category.
 
 ## Cost-tiering quick guide
 

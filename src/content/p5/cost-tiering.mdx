@@ -94,7 +94,7 @@ When embedding agents in your own application via the Agent SDK, pass `model` as
 // Expensive judgment step
 const planResult = await query({
   prompt: `Review the migration plan and identify risks`,
-  model: 'claude-opus-4-5',
+  model: 'claude-opus-4-8',
   effort: 'high',
   maxTurns: 20,
 })
@@ -160,7 +160,7 @@ A minimal two-tier subagent roster for a code-change pipeline:
 ---
 name: domain-planner
 description: Plans the approach for a new feature or change, identifies risks, scopes the work.
-model: claude-sonnet-4-5
+model: claude-sonnet-4-6
 effort: high
 maxTurns: 15
 tools:
@@ -192,7 +192,7 @@ The `maxBudgetUsd` option in the SDK's `query()` call sets a hard spend ceiling 
 ```typescript
 const result = await query({
   prompt: analysisPrompt,
-  model: 'claude-opus-4-5',
+  model: 'claude-opus-4-8',
   effort: 'high',
   maxBudgetUsd: 0.50,   // hard ceiling; emits error_max_budget_usd if hit
   maxTurns: 30,

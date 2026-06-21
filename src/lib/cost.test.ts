@@ -10,6 +10,6 @@ describe('cost', () => {
   it('costBoth totals', () => {
     const opus = MODELS.find(m => m.id === 'claude-opus-4-8'); if (!opus) throw new Error('missing')
     const r = costBoth(1_000_000, 1_000_000, opus)
-    expect(r.input).toBeCloseTo(15); expect(r.output).toBeCloseTo(75); expect(r.total).toBeCloseTo(90)
+    expect(r.input).toBeCloseTo(5); expect(r.output).toBeCloseTo(25); expect(r.total).toBeCloseTo(30)
   })
 })

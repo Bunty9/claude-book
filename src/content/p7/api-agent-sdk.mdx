@@ -58,7 +58,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk'
 
 for await (const message of query({
   prompt: 'Read package.json and list all direct dependencies.',
-  model: 'claude-sonnet-4-5',
+  model: 'claude-sonnet-4-6',
   maxTurns: 10,
   maxBudgetUsd: 0.50,
 })) {
@@ -78,7 +78,7 @@ from claude_agent_sdk import query, ClaudeAgentOptions
 async def main():
     async for message in query(ClaudeAgentOptions(
         prompt="Read package.json and list all direct dependencies.",
-        model="claude-sonnet-4-5",
+        model="claude-sonnet-4-6",
         max_turns=10,
         max_budget_usd=0.50,
     )):
@@ -267,7 +267,7 @@ async function runCodeAgent(userPrompt: string): Promise<string> {
 
   for await (const msg of query({
     prompt: userPrompt,
-    model: 'claude-sonnet-4-5',
+    model: 'claude-sonnet-4-6',
     permissionMode: 'dontAsk',
     allowedTools,
     maxTurns: 25,

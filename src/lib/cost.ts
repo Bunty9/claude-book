@@ -1,4 +1,7 @@
-// Indicative public list prices; reconcile against research packet C (Task 1.3) before publishing pricing claims.
+// Public list prices, USD per 1M tokens. Verified against official Anthropic pricing
+// (platform.claude.com/docs/en/about-claude/pricing) on 2026-06-21 — see
+// docs/research/packet-C-models-pricing.md. Prices change; always reconfirm before
+// quoting a production budget.
 
 export interface ModelPrice {
   id: string
@@ -8,9 +11,9 @@ export interface ModelPrice {
 }
 
 export const MODELS: ModelPrice[] = [
-  { id: 'claude-opus-4-8',   label: 'Opus 4.8',   inputPerM: 15,  outputPerM: 75 },
-  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', inputPerM: 3,   outputPerM: 15 },
-  { id: 'claude-haiku-4-5',  label: 'Haiku 4.5',  inputPerM: 0.8, outputPerM: 4  },
+  { id: 'claude-opus-4-8',   label: 'Opus 4.8',   inputPerM: 5, outputPerM: 25 },
+  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', inputPerM: 3, outputPerM: 15 },
+  { id: 'claude-haiku-4-5',  label: 'Haiku 4.5',  inputPerM: 1, outputPerM: 5  },
 ]
 
 /** Returns USD cost for `tokens` tokens on a single side (input or output). */
