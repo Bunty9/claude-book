@@ -24,9 +24,6 @@ Every repeatable task you automate has the same underlying shape. Something happ
     E["📥 Event\n(trigger)"] --> C{"Condition\n(filter / branch)"}
     C -->|"matches"| A["⚙️ Action\n(do something)"]
     C -->|"no match"| N["🔕 Skip"]
-
-    style E fill:var(--color-accent),color:#fff
-    style A fill:var(--color-tip),color:#fff
 `} />
 
 **Event:** something that happens in the world — a new email arrives, a calendar event starts in 30 minutes, a form is submitted, a new row appears in a spreadsheet, a webhook fires.

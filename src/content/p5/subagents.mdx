@@ -97,10 +97,6 @@ graph TD
     Q2 -- "Yes — many reads,<br/>many turns" --> Q3{"Can it run on a<br/>disjoint file set?"}
     Q3 -- "No — shared files<br/>→ conflict risk" --> WARN["Serialize, don't parallelize"]
     Q3 -- "Yes" --> DELEGATE["Delegate to subagent"]
-
-    style DONT fill:var(--note-subtle),color:var(--fg)
-    style WARN fill:var(--warning-subtle),color:var(--fg)
-    style DELEGATE fill:var(--tip-subtle),color:var(--fg)
 `} />
 
 **Delegate when:**

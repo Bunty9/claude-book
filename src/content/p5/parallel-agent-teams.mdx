@@ -78,9 +78,6 @@ The hard part of parallel teams is not running them — the `Agent` tool handles
     check2 --> safe
     check3 --> safe
     check4 --> safe
-
-    style safe fill:var(--tip-subtle),color:var(--fg)
-    style task fill:var(--bg-elevated),color:var(--fg)
 `} />
 
 For file-scope partitioning specifically: list all files in scope, group them, and confirm that no file appears in more than one group. This is worth doing explicitly, not by feel. A module that imports from another module does not prevent parallelism — what matters is which files get written, not which files get read.

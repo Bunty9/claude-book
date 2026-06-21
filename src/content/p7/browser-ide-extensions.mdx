@@ -15,10 +15,6 @@ Before going deep on either extension, it helps to see how the surfaces relate t
 
     CLI -- "same underlying model" --- CHR
     CLI -- "same underlying model" --- IDE
-
-    style CLI fill:var(--color-accent),color:#fff
-    style CHR fill:var(--color-note),color:#fff
-    style IDE fill:var(--color-tip),color:#fff
 `} />
 
 All three surfaces call the same underlying Claude models. What differs is the **context each surface can see** and the **actions it can take**. The CLI has the widest action surface (every built-in tool). Extensions have narrower, domain-specific action sets but zero setup friction for their target environment.

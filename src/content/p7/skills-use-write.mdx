@@ -173,11 +173,6 @@ Skills resolve from the closest scope to the furthest, stopping at the first mat
     F -- not found --> H["Bundled skills"]
     H -- found --> I["Load bundled skill"]
     H -- not found --> J["Command not found"]
-
-    style C fill:var(--tip-subtle),color:var(--fg)
-    style E fill:var(--note-subtle),color:var(--fg)
-    style G fill:var(--warning-subtle),color:var(--fg)
-    style I fill:var(--bg-subtle),color:var(--fg)
 `} />
 
 This cascade means you can always override any bundled or plugin skill at the project level. Ship a `.claude/skills/run/SKILL.md` and the bundled `/run` never fires in your repo again — your recipe runs instead.

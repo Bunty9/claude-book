@@ -146,11 +146,6 @@ graph TD
         AR -- "findings" --> FIX["Fixer"]
         FIX --> MERGE["Ready to merge"]
     end
-
-    style AGG fill:var(--tip-subtle),color:var(--fg)
-    style REPORT fill:var(--tip-subtle),color:var(--fg)
-    style MERGE fill:var(--tip-subtle),color:var(--fg)
-    style V fill:var(--note-subtle),color:var(--fg)
 `} />
 
 The two shapes can be combined. Run the quality pipeline to produce a well-tested implementation. Then run a fan-out panel over the final diff before merge. The pipeline ensures correctness; the panel ensures the implementation has no blind spots the author missed.

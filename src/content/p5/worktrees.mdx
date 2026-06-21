@@ -89,11 +89,6 @@ flowchart TD
     PR1 --> DEV
     PR2 --> DEV
     PR3 --> DEV
-
-    style DEV fill:var(--color-accent-subtle),stroke:var(--color-accent)
-    style WT1 fill:var(--color-tip-subtle),stroke:var(--color-tip)
-    style WT2 fill:var(--color-tip-subtle),stroke:var(--color-tip)
-    style WT3 fill:var(--color-tip-subtle),stroke:var(--color-tip)
 `} />
 
 Each worktree branches from the same `origin/dev` base. Each runs independently. Each merges back through a PR. The main checkout is not involved at any point.

@@ -150,9 +150,6 @@ To make layering concrete, consider what happens when Claude Code resolves the `
     C[".claude/settings.local.json\nmodel: claude-sonnet-4-6"] -->|overridden| B
     D[".claude/settings.json\nno model key"] -->|overridden| C
     E["~/.claude/settings.json\nmodel: claude-haiku-4"] -->|overridden| D
-
-    style A fill:#e8f4fd,stroke:#3b82f6
-    style RESULT fill:#d1fae5,stroke:#10b981
 `} />
 
 If no managed settings exist, the CLI arg would win. Remove the CLI arg and local settings win. The user settings at the bottom act as the fallback when nothing above specifies the key.
