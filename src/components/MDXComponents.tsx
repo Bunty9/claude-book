@@ -5,6 +5,7 @@ import { CodeBlock } from './CodeBlock'
 import { Figure } from './Figure'
 import { Mermaid } from './Mermaid'
 import { Markmap } from './Markmap'
+import { Tokenizer } from './widgets/Tokenizer'
 
 /** Props we expect on the <code> child of a fenced code block. */
 type CodeProps = { className?: string; children?: string }
@@ -65,6 +66,7 @@ export const mdxComponents: MDXComponents = {
   Figure,
   Mermaid,
   Markmap,
+  Tokenizer,
 
   // Override <pre> to route fenced code through CodeBlock
   pre: PreOverride,

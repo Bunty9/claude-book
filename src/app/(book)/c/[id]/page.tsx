@@ -25,7 +25,7 @@ export const dynamicParams = false
 // ---------------------------------------------------------------------------
 
 const CHAPTERS_MDX: Record<string, () => Promise<{ default: React.ComponentType }>> = {
-  // 'what-is-an-llm': () => import('@/content/p0/what-is-an-llm.mdx'),
+  'what-is-an-llm': () => import('@/content/p0/what-is-an-llm.mdx'),
 }
 
 // ---------------------------------------------------------------------------
