@@ -128,3 +128,39 @@ samp {
   border: 1px solid var(--code-border);
   border-radius: var(--radius-sm);
 }
+
+/* ── Scrollbars ─────────────────────────────────────────────────────────── */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--fg-subtle);
+  background-clip: padding-box;
+}
+
+/* ── Shiki dual-theme class-based switching ──────────────────────────────── */
+/* Dark is default (no class on :root). Light overrides via .light class. */
+.shiki,
+.shiki span {
+  color: var(--shiki-dark);
+  background-color: var(--shiki-dark-bg);
+}
+.light .shiki,
+.light .shiki span {
+  color: var(--shiki-light);
+  background-color: var(--shiki-light-bg);
+}

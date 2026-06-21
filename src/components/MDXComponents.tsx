@@ -92,4 +92,42 @@ export const mdxComponents: MDXComponents = {
 
   // Override <pre> to route fenced code through CodeBlock
   pre: PreOverride,
+
+  // Table wrapper — scroll instead of crush
+  table: ({ children, ...props }: React.HTMLAttributes<HTMLTableElement>) => (
+    <div className="overflow-x-auto my-6">
+      <table
+        {...props}
+        className="w-full text-sm border-collapse border border-border"
+      >
+        {children}
+      </table>
+    </div>
+  ),
+  thead: ({ children, ...props }: React.HTMLAttributes<HTMLTableSectionElement>) => (
+    <thead {...props} className="bg-bg-subtle">
+      {children}
+    </thead>
+  ),
+  th: ({ children, ...props }: React.ThHTMLAttributes<HTMLTableCellElement>) => (
+    <th
+      {...props}
+      className="px-4 py-2.5 text-left font-semibold text-fg border-b border-border whitespace-nowrap"
+    >
+      {children}
+    </th>
+  ),
+  tr: ({ children, ...props }: React.HTMLAttributes<HTMLTableRowElement>) => (
+    <tr
+      {...props}
+      className="border-b border-border-subtle hover:bg-bg-elevated transition-colors"
+    >
+      {children}
+    </tr>
+  ),
+  td: ({ children, ...props }: React.TdHTMLAttributes<HTMLTableCellElement>) => (
+    <td {...props} className="px-4 py-2.5 text-fg-muted">
+      {children}
+    </td>
+  ),
 }

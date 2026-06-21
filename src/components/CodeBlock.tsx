@@ -70,6 +70,7 @@ export function CodeBlock({ children, className }: CodeBlockProps) {
         const highlighted = hl.codeToHtml(children, {
           lang: safeLang,
           themes: { dark: 'github-dark', light: 'github-light' },
+          defaultColor: false,
         })
         if (!cancelled) setHtml(highlighted)
       })
