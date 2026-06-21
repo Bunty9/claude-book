@@ -90,6 +90,12 @@
   --tw-prose-td-borders:   var(--border-subtle);
 }
 
+/* ── Heading anchor offset ─────────────────────────────────────────────── */
+h2,
+h3 {
+  scroll-margin-top: 5rem;
+}
+
 /* ── Base styles ────────────────────────────────────────────────────────── */
 body {
   background: var(--bg);

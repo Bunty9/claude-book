@@ -1,6 +1,7 @@
 'use client'
 
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useRef } from 'react'
+import { usePathname } from 'next/navigation'
 
 interface Heading {
   id: string
@@ -24,18 +25,57 @@ function queryHeadings(): Heading[] {
 }
 
 export function TableOfContents() {
+  const pathname = usePathname()
   const [headings, setHeadings] = useState<Heading[]>([])
+  const [activeId, setActiveId] = useState<string>('')
+  const observerRef = useRef<IntersectionObserver | null>(null)
 
+  // Re-query headings whenever the pathname changes (new chapter)
   useEffect(() => {
-    // Queue the DOM query so it runs after paint and satisfies the
-    // react-hooks/set-state-in-effect rule (setState in a callback, not inline).
-    const id = requestAnimationFrame(() => {
+    const rafId = requestAnimationFrame(() => {
       setHeadings(queryHeadings())
+      setActiveId('')
     })
-    return () => cancelAnimationFrame(id)
-  }, [])
+    return () => cancelAnimationFrame(rafId)
+  }, [pathname])
+
+  // Set up IntersectionObserver for scroll-spy
+  useEffect(() => {
+    if (headings.length === 0) return
+
+    observerRef.current?.disconnect()
+
+    const observer = new IntersectionObserver(
+      entries => {
+        // Find the last entry that is intersecting (topmost in viewport)
+        let found: string | null = null
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            found = entry.target.id
+          }
+        }
+        if (found !== null) {
+          setActiveId(found)
+        }
+      },
+      { rootMargin: '0px 0px -60% 0px', threshold: 0 },
+    )
+
+    headings.forEach(h => {
+      const el = document.getElementById(h.id)
+      if (el !== null) observer.observe(el)
+    })
+
+    observerRef.current = observer
+    return () => observer.disconnect()
+  }, [headings])
 
   if (headings.length === 0) return null
+
+  function handleClick(e: React.MouseEvent<HTMLAnchorElement>, id: string) {
+    e.preventDefault()
+    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' })
+  }
 
   return (
     <nav aria-label="Table of contents">
@@ -45,9 +85,12 @@ export function TableOfContents() {
           <li key={h.id}>
             <a
               href={`#${h.id}`}
+              onClick={e => handleClick(e, h.id)}
               className={[
-                'block text-sm text-fg-muted hover:text-fg transition-colors',
-                h.level === 3 ? 'pl-3' : '',
+                'block text-sm transition-colors',
+                h.id === activeId
+                  ? 'text-accent font-medium border-l-2 border-accent pl-2'
+                  : `text-fg-muted hover:text-fg ${h.level === 3 ? 'pl-3' : 'pl-0'}`,
               ].join(' ')}
             >
               {h.text}
