@@ -1,5 +1,3 @@
-# Long-running tasks without context bloat
-
 The context window is append-only: every file read, tool output, and response accumulates until something gives. This chapter shows you the operator-level techniques for sustaining multi-hour — and multi-day — jobs without drowning the window, triggering runaway compaction, or losing continuity between sessions.
 
 ## Why context bloat is an engineering problem, not a UX annoyance

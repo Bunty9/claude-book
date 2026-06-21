@@ -1,5 +1,3 @@
-# Code review — adversarial subagent panels
-
 An adversarial review panel dispatches multiple independent subagents over the same diff, each probing a different failure mode, then synthesises the findings before a single line of code merges. This chapter explains how panels work, why independence matters, when to use a cheap verifier versus a deep reviewer, and how the verify-before-claim discipline prevents the most common quality failure in autonomous coding: confident changes that are subtly wrong.
 
 ## The problem with single-agent review
