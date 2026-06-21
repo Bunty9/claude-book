@@ -1,6 +1,15 @@
 import { chapters } from '@/content/manifest'
 import { SearchDoc } from './searchIndex'
 
+function isBodyMap(j: unknown): j is Record<string, string> {
+  return (
+    typeof j === 'object' &&
+    j !== null &&
+    !Array.isArray(j) &&
+    Object.values(j).every((v) => typeof v === 'string')
+  )
+}
+
 /**
  * Fetch plaintext bodies from the build-time generated JSON, then join with
  * manifest metadata (title, summary, part) to produce SearchDoc[].
@@ -14,8 +23,8 @@ export async function loadSearchDocs(): Promise<SearchDoc[]> {
     const res = await fetch('/search-bodies.json')
     if (res.ok) {
       const json: unknown = await res.json()
-      if (typeof json === 'object' && json !== null && !Array.isArray(json)) {
-        bodies = json as Record<string, string>
+      if (isBodyMap(json)) {
+        bodies = json
       }
     }
   } catch {

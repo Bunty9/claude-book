@@ -8,6 +8,10 @@ import { loadSearchDocs } from '@/lib/searchData'
 import { PART_LABELS } from '@/content/parts'
 import { PartId } from '@/content/types'
 
+function isPartId(s: string): s is PartId {
+  return Object.prototype.hasOwnProperty.call(PART_LABELS, s)
+}
+
 // ---------------------------------------------------------------------------
 // Index cache — loaded once per session on first palette open
 // ---------------------------------------------------------------------------
@@ -104,7 +108,7 @@ function PaletteInner({ onClose, onNavigate }: PaletteInnerProps) {
       {hits.length > 0 && (
         <ul role="listbox" className="py-2 max-h-80 overflow-y-auto">
           {hits.map((hit, i) => {
-            const partLabel = PART_LABELS[hit.part as PartId] ?? hit.part
+            const partLabel = isPartId(hit.part) ? PART_LABELS[hit.part] : hit.part
             return (
               <li
                 key={hit.id}
@@ -146,9 +150,8 @@ function PaletteInner({ onClose, onNavigate }: PaletteInnerProps) {
 
 // ---------------------------------------------------------------------------
 // SearchPalette — outer shell.
-// Uses `instanceKey` (incremented each time the palette opens) as the `key`
-// on PaletteInner so React remounts it fresh on each open, resetting state
-// without needing any setState-in-effect.
+// `if (!open) return null` unmounts PaletteInner on close, so it remounts
+// fresh on each open with clean state — no instanceKey needed.
 // ---------------------------------------------------------------------------
 
 interface SearchPaletteProps {
@@ -158,17 +161,6 @@ interface SearchPaletteProps {
 
 export function SearchPalette({ open, onClose }: SearchPaletteProps) {
   const router = useRouter()
-  // Counts how many times the palette has been opened; used as key for PaletteInner.
-  const [instanceKey, setInstanceKey] = useState(0)
-
-  // Increment the instance key each time the palette transitions to open.
-  // We wrap setState in a resolved Promise so it runs asynchronously —
-  // this avoids the react-hooks/set-state-in-effect lint rule which
-  // forbids synchronous setState calls in effect bodies.
-  useEffect(() => {
-    if (!open) return
-    void Promise.resolve().then(() => setInstanceKey(k => k + 1))
-  }, [open])
 
   const navigate = useCallback((id: string) => {
     router.push(`/c/${id}`)
@@ -185,7 +177,7 @@ export function SearchPalette({ open, onClose }: SearchPaletteProps) {
       aria-modal="true"
       onClick={onClose}
     >
-      <PaletteInner key={instanceKey} onClose={onClose} onNavigate={navigate} />
+      <PaletteInner onClose={onClose} onNavigate={navigate} />
     </div>
   )
 }
