@@ -1,7 +1,6 @@
 import React from 'react'
 import { notFound } from 'next/navigation'
 import { chapters, chapterById } from '@/content/manifest'
-import { Breadcrumbs } from '@/components/shell/Breadcrumbs'
 import { PrevNext } from '@/components/shell/PrevNext'
 import { MarkDoneButton } from './MarkDoneButton'
 import { CHAPTERS_MDX } from './chapterMdxRegistry'
@@ -82,13 +81,10 @@ export default async function ChapterPage({ params }: ChapterPageProps) {
 
   return (
     <article>
-      <Breadcrumbs part={meta.part} title={meta.title} />
-
       <header className="mb-8">
         <p className="text-xs font-semibold text-fg-subtle uppercase tracking-wide mb-1">
           Part {meta.part} · {meta.estMinutes} min read
         </p>
-        <h1 className="text-3xl font-bold tracking-tight text-fg">{meta.title}</h1>
         <p className="mt-2 text-lg text-fg-muted">{meta.summary}</p>
       </header>
 

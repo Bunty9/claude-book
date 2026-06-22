@@ -6,6 +6,8 @@ import { PART_LABELS } from '@/content/parts'
 interface BreadcrumbsProps {
   part: PartId
   title: string
+  /** Compact variant for the sticky header: smaller text, no bottom margin. */
+  compact?: boolean
 }
 
 function ChevronRight() {
@@ -16,9 +18,15 @@ function ChevronRight() {
   )
 }
 
-export function Breadcrumbs({ part, title }: BreadcrumbsProps) {
+export function Breadcrumbs({ part, title, compact = false }: BreadcrumbsProps) {
   return (
-    <nav aria-label="Breadcrumb" className="flex items-center flex-wrap gap-2 text-sm text-fg-muted mb-4">
+    <nav
+      aria-label="Breadcrumb"
+      className={[
+        'flex items-center flex-wrap gap-1.5 text-fg-muted',
+        compact ? 'text-xs' : 'text-sm mb-4',
+      ].join(' ')}
+    >
       <Link href="/" className="hover:text-fg transition-colors shrink-0">Home</Link>
       <span className="hidden sm:contents">
         <ChevronRight />

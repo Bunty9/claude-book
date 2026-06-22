@@ -3,6 +3,7 @@ import '@fontsource-variable/geist'
 import '@fontsource-variable/geist-mono'
 import './globals.css'
 import { Providers } from './providers'
+import { Footer } from '@/components/shell/Footer'
 
 export const metadata: Metadata = {
   title: 'Claude, End to End',
@@ -30,7 +31,10 @@ export default function RootLayout({
         />
       </head>
       <body className="min-h-full flex flex-col">
-        <Providers>{children}</Providers>
+        <Providers>
+          <div className="flex-1">{children}</div>
+          <Footer />
+        </Providers>
       </body>
     </html>
   )

@@ -153,7 +153,8 @@ function SidebarContent({ onOpenSearch }: SidebarProps) {
             <ul>
               {chs.map(ch => {
                 const href = `/c/${ch.id}`
-                const isActive = pathname === href
+                // trailingSlash: true → pathname is `/c/<id>/`; compare both forms
+                const isActive = pathname === href || pathname === `${href}/`
                 const done = mounted && isDone(ch.id)
                 return (
                   <li key={ch.id}>
