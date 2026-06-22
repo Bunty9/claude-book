@@ -1,36 +1,63 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Claude, End to End
 
-## Getting Started
+An interactive, offline-capable reference book that teaches **Claude** and **Claude Code** to three reader personas — beginner, engineer, and automator. 53 chapters, 11 interactive widgets, client-side search, and per-reader progress tracking.
 
-First, run the development server:
+🔗 **Live:** https://claude-book-one.vercel.app
+
+It's a fully static Next.js SPA + PWA — no backend, no database. `next build` produces a folder of static files plus a service worker, so it installs and works offline after first load.
+
+## Quick start
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+pnpm install
+pnpm dev            # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Verify like CI does:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+pnpm typecheck && pnpm lint && pnpm test && pnpm build
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Preview the real static output (service worker active):
 
-## Learn More
+```bash
+pnpm build && pnpm preview
+```
 
-To learn more about Next.js, take a look at the following resources:
+## Stack
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Next.js 16 (App Router, static export) · React 19 · TypeScript (strict) · Tailwind v4 · MDX · shiki · mermaid · markmap · minisearch · next-pwa · vitest. Package manager: **pnpm**.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Scripts
 
-## Deploy on Vercel
+| Command | Purpose |
+| --- | --- |
+| `pnpm dev` | Dev server on :3000 (PWA disabled) |
+| `pnpm build` | Production static build → `out/` (runs the search-index step first) |
+| `pnpm preview` | Serve `out/` locally |
+| `pnpm typecheck` | `tsc --noEmit` |
+| `pnpm lint` | `eslint src` |
+| `pnpm test` / `pnpm test:watch` | vitest |
+| `pnpm build:search` | Rebuild the client search index |
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Project layout
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```
+src/
+  app/        routes + layouts (root, (book) shell, /, /start, /c/[id])
+  content/    manifest.ts (source of truth) + p0…p10/*.mdx chapters
+  components/ MDX map, CodeBlock, Mermaid, shell/, widgets/
+  lib/        pure logic + hooks (each with a *.test.ts)
+  design/     oklch design tokens
+scripts/      build-search-index.mjs
+docs/         development.md (full guide) + research/
+```
+
+## Contributing
+
+- **Add a chapter:** add a `ChapterMeta` to `src/content/manifest.ts`, create `src/content/pN/<id>.mdx`, and register the import in `src/app/(book)/c/[id]/chapterMdxRegistry.ts`.
+- **Add a widget:** put the logic in `src/lib/<name>.ts` (with tests), the UI in `src/components/widgets/<Name>.tsx`, and register it in `src/components/MDXComponents.tsx`.
+- TypeScript strict — no `as` / `!` / `any`. Use design tokens, not hex. Conventional commits.
+
+See **[`docs/development.md`](docs/development.md)** for the full developer guide and **[`CLAUDE.md`](CLAUDE.md)** for the agent rulebook.
