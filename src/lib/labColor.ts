@@ -1,9 +1,13 @@
 /**
- * CIELAB color math utilities for converting CSS `lab(L a b)` values to sRGB.
+ * CSS color math utilities for converting `lab(L a b)` and `oklch(L C H)`
+ * values to sRGB.
  *
- * Used by Mermaid.tsx to convert tokens that getComputedStyle normalises to
- * `lab(...)` into `rgb(...)` strings that Mermaid's color engine (khroma) can
- * parse. Both functions are pure; they have no DOM or side-effect dependency.
+ * Used by Mermaid.tsx to convert design tokens — authored in `oklch()` and
+ * read back through getComputedStyle — into `rgb(...)` strings that Mermaid's
+ * color engine (khroma) can parse. Depending on the engine, getComputedStyle
+ * returns the resolved color as either `lab(...)` or `oklch(...)`; khroma
+ * rejects both, so we convert whichever form we get. All functions are pure;
+ * they have no DOM or side-effect dependency.
  */
 
 /**
@@ -48,5 +52,38 @@ export function labToRgb(value: string): string | null {
   const r = 3.1341359 * X - 1.6173086 * Y - 0.4906238 * Z
   const g = -0.9787553 * X + 1.9161606 * Y + 0.033454 * Z
   const bl = 0.0719453 * X - 0.2289914 * Y + 1.4052427 * Z
+  return `rgb(${encodeChannel(r)}, ${encodeChannel(g)}, ${encodeChannel(bl)})`
+}
+
+/**
+ * Convert a CSS `oklch(L C H)` string (per CSS Color 4) to an sRGB `rgb(...)`
+ * string. Returns null if the input is not an oklch() value.
+ *
+ * L is the 0–1 lightness (a `%` suffix means ÷100, so `50%` → 0.5 — unlike
+ * lab(), where `50%` denotes L=50). Any alpha component is ignored.
+ */
+export function oklchToRgb(value: string): string | null {
+  const match = value.match(/^oklch\(\s*([\d.+-]+)(%?)\s+([\d.+-]+)\s+([\d.+-]+)/)
+  if (!match) return null
+  const L = match[2] === '%' ? Number(match[1]) / 100 : Number(match[1])
+  const C = Number(match[3])
+  const H = Number(match[4])
+  if (!Number.isFinite(L) || !Number.isFinite(C) || !Number.isFinite(H)) return null
+
+  // OKLCh → OKLab (polar → rectangular)
+  const hr = (H * Math.PI) / 180
+  const a = C * Math.cos(hr)
+  const b = C * Math.sin(hr)
+
+  // OKLab → linear sRGB (Björn Ottosson, https://bottosson.github.io/posts/oklab/)
+  const l_ = L + 0.3963377774 * a + 0.2158037573 * b
+  const m_ = L - 0.1055613458 * a - 0.0638541728 * b
+  const s_ = L - 0.0894841775 * a - 1.291485548 * b
+  const l = l_ ** 3
+  const m = m_ ** 3
+  const s = s_ ** 3
+  const r = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s
+  const g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s
+  const bl = -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s
   return `rgb(${encodeChannel(r)}, ${encodeChannel(g)}, ${encodeChannel(bl)})`
 }

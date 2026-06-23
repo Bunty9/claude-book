@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react'
 import { useTheme } from '@/app/providers'
-import { labToRgb } from '@/lib/labColor'
+import { labToRgb, oklchToRgb } from '@/lib/labColor'
 
 interface MermaidProps {
   chart: string
@@ -11,10 +11,11 @@ interface MermaidProps {
 /**
  * Resolve a CSS custom property to an sRGB color string Mermaid can parse.
  *
- * Tokens are authored in `oklch()`, and getComputedStyle normalizes them to
- * `lab(...)` in this engine — both of which Mermaid's color engine (khroma)
- * rejects, throwing at render time. We convert lab→rgb ourselves. rgb/hex
- * pass through; anything unrecognized returns raw (Mermaid then falls back).
+ * Tokens are authored in `oklch()`. Depending on the engine, getComputedStyle
+ * returns them as either `lab(...)` or `oklch(...)` — both of which Mermaid's
+ * color engine (khroma) rejects, throwing at render time. We convert whichever
+ * form we get to rgb ourselves. rgb/hex pass through; anything unrecognized
+ * returns raw (Mermaid then falls back).
  */
 function resolveColor(varName: string): string {
   const probe = document.createElement('span')
@@ -23,7 +24,7 @@ function resolveColor(varName: string): string {
   document.body.appendChild(probe)
   const raw = getComputedStyle(probe).color
   probe.remove()
-  return labToRgb(raw) ?? raw
+  return labToRgb(raw) ?? oklchToRgb(raw) ?? raw
 }
 
 function readTokens(): Record<string, string> {
